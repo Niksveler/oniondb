@@ -28,8 +28,13 @@ OnionDB organizes data in concentric shells -- like layers of an onion. Every re
 ## Install
 
 ```bash
-pip install oniondb            # zero dependencies
-pip install oniondb[fast]      # optional numpy acceleration (~10x cosine speed)
+pip install oniondb
+```
+
+With optional numpy acceleration (~10x cosine speed):
+
+```bash
+pip install oniondb[fast]
 ```
 
 ## Quick Start
