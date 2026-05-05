@@ -5,9 +5,18 @@ No AIGalaxy dependencies — fresh DB per test.
 import os
 import math
 import random
+import subprocess
+import sys
 import tempfile
 import pytest
 from oniondb import OnionDB
+
+
+def _emb(dim=32, seed=None):
+    """Generate a random embedding vector."""
+    if seed is not None:
+        random.seed(seed)
+    return [random.gauss(0, 1) for _ in range(dim)]
 
 
 @pytest.fixture
@@ -71,13 +80,26 @@ class TestInsert:
         assert mem["content"] == "Version 2"
         assert db.count() == 1
 
-    def test_importance_to_gap_mapping(self, db):
-        # Gap 0: >= 0.95, Gap 1: >= 0.85, Gap 2: >= 0.70, Gap 3: >= 0.50, Gap 4: < 0.50
-        assert db.insert("g0", "Core", importance=0.99)["gap"] == 0
-        assert db.insert("g1", "High", importance=0.90)["gap"] == 1
-        assert db.insert("g2", "Mid", importance=0.75)["gap"] == 2
-        assert db.insert("g3", "Low", importance=0.55)["gap"] == 3
-        assert db.insert("g4", "Trivial", importance=0.30)["gap"] == 4
+    @pytest.mark.parametrize("importance,expected_gap", [
+        (1.0, 0),     # max boundary
+        (0.99, 0),    # core
+        (0.95, 0),    # exact boundary: gap 0
+        (0.94, 1),    # just below gap 0
+        (0.90, 1),    # high
+        (0.85, 1),    # exact boundary: gap 1
+        (0.84, 2),    # just below gap 1
+        (0.75, 2),    # mid
+        (0.70, 2),    # exact boundary: gap 2
+        (0.69, 3),    # just below gap 2
+        (0.55, 3),    # low
+        (0.50, 3),    # exact boundary: gap 3
+        (0.49, 4),    # just below gap 3
+        (0.30, 4),    # trivial
+        (0.0, 4),     # min boundary
+    ])
+    def test_importance_to_gap_mapping(self, db, importance, expected_gap):
+        addr = db.insert(f"g-{importance}", "test", importance=importance)
+        assert addr["gap"] == expected_gap
 
 
 class TestCRUD:
@@ -566,3 +588,197 @@ class TestNumpyAcceleration:
         from oniondb.onion_db import _HAS_NUMPY
         assert isinstance(_HAS_NUMPY, bool)
 
+
+# ═══════════════════════════════════════
+# EDGE CASES
+# ═══════════════════════════════════════
+
+class TestEdgeCases:
+    def test_insert_importance_zero(self, db):
+        addr = db.insert("zero", "Zero importance", importance=0.0)
+        assert addr is not None
+        assert addr["gap"] == 4  # lowest shell
+        assert db.get("zero") is not None
+
+    def test_insert_importance_one(self, db):
+        addr = db.insert("one", "Max importance", importance=1.0)
+        assert addr is not None
+        assert addr["gap"] == 0  # highest shell
+        assert db.get("one") is not None
+
+    def test_batch_insert_large(self, db):
+        """Stress test with 1000 items."""
+        items = [
+            {"id": f"large-{i}", "content": f"Item {i}",
+             "importance": (i % 100) / 100}
+            for i in range(1000)
+        ]
+        result = db.batch_insert(items)
+        assert len(result) == 1000
+        assert db.count() == 1000
+
+    def test_empty_content(self, db):
+        addr = db.insert("empty", "", importance=0.5)
+        assert addr is not None
+        mem = db.get("empty")
+        assert mem["content"] == ""
+
+    def test_very_long_content(self, db):
+        long_text = "x" * 100_000
+        addr = db.insert("long", long_text, importance=0.5)
+        mem = db.get("long")
+        assert len(mem["content"]) == 100_000
+
+    def test_special_characters_in_id(self, db):
+        addr = db.insert("id/with:special@chars!", "test", importance=0.5)
+        mem = db.get("id/with:special@chars!")
+        assert mem is not None
+
+    def test_unicode_content(self, db):
+        addr = db.insert("uni", "日本語テスト 🧅 émojis", importance=0.5)
+        mem = db.get("uni")
+        assert "🧅" in mem["content"]
+
+    def test_concurrent_reads(self, tmp_path):
+        """Multiple threads reading simultaneously should not error."""
+        import threading
+        db = OnionDB(str(tmp_path / "read.db"))
+        for i in range(50):
+            db.insert(f"r-{i}", f"Read test {i}", importance=random.uniform(0.1, 0.9))
+
+        errors = []
+        results = []
+
+        def reader(thread_id):
+            try:
+                for i in range(10):
+                    mem = db.get(f"r-{i}")
+                    if mem:
+                        results.append(mem["id"])
+                    db.shell_scan(gap=random.randint(0, 4), limit=5)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=reader, args=(t,)) for t in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Read errors: {errors}"
+        assert len(results) > 0
+        db.close()
+
+
+# ═══════════════════════════════════════
+# DATA INTEGRITY
+# ═══════════════════════════════════════
+
+class TestDataIntegrity:
+    def test_metadata_roundtrip(self, db):
+        """All fields survive insert → get cycle."""
+        db.insert("meta", "Content here", importance=0.73,
+                  category="technical")
+        mem = db.get("meta")
+        assert mem["id"] == "meta"
+        assert mem["content"] == "Content here"
+        assert mem["importance"] == pytest.approx(0.73)
+        assert mem["category"] == "technical"
+
+    def test_embedding_precision_full_pipeline(self, db):
+        """Float precision maintained through insert → get → decode."""
+        original = [0.123456789, -0.987654321, 0.0, 1.0, -1.0] + [0.5] * 27
+        db.insert("prec", "precision test", importance=0.5, embedding=original)
+        mem = db.get("prec")
+        assert "_emb" in mem
+        decoded = mem["_emb"]
+        assert len(decoded) == len(original)
+        for a, b in zip(original, decoded):
+            assert a == pytest.approx(b, abs=1e-5)
+
+    def test_gap_depth_consistency(self, db):
+        """Records in same gap should have consistent depth ordering."""
+        db.insert("d1", "High in gap", importance=0.99)
+        db.insert("d2", "Lower in gap", importance=0.96)
+        m1 = db.get("d1")
+        m2 = db.get("d2")
+        # Both should be in gap 0, but d1 has higher importance = lower depth
+        assert m1["gap"] == 0
+        assert m2["gap"] == 0
+        assert m1["depth"] <= m2["depth"]
+
+    def test_delete_actually_removes(self, db):
+        """Deleted records don't appear in any query."""
+        db.insert("del1", "Delete me", importance=0.5)
+        db.delete("del1")
+        assert db.get("del1") is None
+        assert db.count() == 0
+        scan = db.shell_scan(gap=3)
+        assert all(r["id"] != "del1" for r in scan)
+
+    def test_replace_updates_all_fields(self, db):
+        """Insert-or-replace should update content AND importance."""
+        db.insert("upd", "Version 1", importance=0.3, category="old")
+        db.insert("upd", "Version 2", importance=0.9, category="new")
+        mem = db.get("upd")
+        assert mem["content"] == "Version 2"
+        assert mem["importance"] == pytest.approx(0.9)
+        assert mem["category"] == "new"
+        assert mem["gap"] == 1  # 0.9 → gap 1
+
+
+# ═══════════════════════════════════════
+# CLI TESTS
+# ═══════════════════════════════════════
+
+class TestCLI:
+    @pytest.fixture
+    def cli_db(self, tmp_path):
+        """Create a populated DB for CLI testing."""
+        db_path = str(tmp_path / "cli_test.db")
+        db = OnionDB(db_path)
+        for i in range(20):
+            db.insert(f"cli-{i}", f"CLI test item {i}",
+                      importance=i / 20, category="test")
+        db.close()
+        return db_path
+
+    def _run_cli(self, *args):
+        """Run oniondb CLI and return (returncode, stdout, stderr)."""
+        result = subprocess.run(
+            [sys.executable, "-m", "oniondb"] + list(args),
+            capture_output=True, text=True, timeout=10
+        )
+        return result
+
+    def test_cli_stats(self, cli_db):
+        result = self._run_cli("stats", cli_db)
+        assert result.returncode == 0
+        assert "20" in result.stdout  # 20 records
+        assert "Records" in result.stdout
+
+    def test_cli_info(self, cli_db):
+        result = self._run_cli("info", cli_db)
+        assert result.returncode == 0
+        assert "OnionDB" in result.stdout
+        assert "Records" in result.stdout
+
+    def test_cli_shell(self, cli_db):
+        result = self._run_cli("shell", cli_db, "--gap", "4", "--limit", "3")
+        assert result.returncode == 0
+        assert "Gap 4" in result.stdout
+
+    def test_cli_density(self, cli_db):
+        result = self._run_cli("density", cli_db, "--gap", "4")
+        assert result.returncode == 0
+        assert "Gap 4" in result.stdout
+        assert "occupancy" in result.stdout
+
+    def test_cli_no_command(self):
+        result = self._run_cli()
+        assert result.returncode != 0
+
+    def test_cli_help(self):
+        result = self._run_cli("--help")
+        assert result.returncode == 0
+        assert "oniondb" in result.stdout.lower()
