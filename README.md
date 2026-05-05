@@ -69,16 +69,16 @@ db.delete("idea-2")      # True
 
 ## Features
 
-| Feature | Description |
-|---------|------------|
-| **Zero dependencies** | stdlib only -- `sqlite3`, `math`, `struct`, `json`, `os` |
-| **Geometric addressing** | Every record has a location: `(gap, theta, phi, depth)` |
-| **Importance shells** | Data stratified by significance -- core vs trivial |
-| **6 query operations** | horizontal, GRF, reverse_ray, temporal_grf, shell_scan, range_scan |
-| **Embedding-agnostic** | Works with any embedding model (OpenAI, Ollama, sentence-transformers...) |
-| **Single-file storage** | SQLite-backed, portable, copy-paste deployable |
-| **Self-calibrating** | `fit_projection()` builds PCA from your data automatically |
-| **Thread-safe** | RLock + WAL mode for concurrent access |
+| Feature                  | Description                                                             |
+|--------------------------|-------------------------------------------------------------------------|
+| **Zero dependencies**    | stdlib only -- `sqlite3`, `math`, `struct`, `json`, `os`               |
+| **Geometric addressing** | Every record has a location: `(gap, theta, phi, depth)`                |
+| **Importance shells**    | Data stratified by significance -- core vs trivial                     |
+| **6 query operations**   | horizontal, GRF, reverse_ray, temporal_grf, shell_scan, range_scan     |
+| **Embedding-agnostic**   | Works with any embedding model (OpenAI, Ollama, sentence-transformers) |
+| **Single-file storage**  | SQLite-backed, portable, copy-paste deployable                         |
+| **Self-calibrating**     | `fit_projection()` builds PCA from your data automatically             |
+| **Thread-safe**          | RLock + WAL mode for concurrent access                                 |
 
 ## The Signature Query: GRF (Geometric Ray Filter)
 
@@ -117,32 +117,32 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 
 ### Core Operations
 
-| Method | Description |
-|--------|-------------|
+| Method                                 | Description                                          |
+|----------------------------------------|------------------------------------------------------|
 | `insert(id, content, importance, ...)` | Insert a record with auto-computed geometric address |
-| `get(id)` | Retrieve a record by ID |
-| `delete(id)` | Delete a record by ID |
-| `count(gap=None)` | Count records (optionally per gap) |
-| `batch_insert(items)` | Insert multiple records in a single transaction |
+| `get(id)`                              | Retrieve a record by ID                              |
+| `delete(id)`                           | Delete a record by ID                                |
+| `count(gap=None)`                      | Count records (optionally per gap)                   |
+| `batch_insert(items)`                  | Insert multiple records in a single transaction      |
 
 ### Query Operations
 
-| Method | Description |
-|--------|-------------|
-| `horizontal(gap, theta, phi, ...)` | Find nearby items within one shell |
-| `grf(theta, phi, ...)` | **Geometric Ray Filter** -- drill through all shells |
-| `reverse_ray(start_embedding, ...)` | Curved semantic trace from outer to inner |
-| `temporal_grf(theta, phi, ...)` | Drill through time-based shells |
-| `shell_scan(gap, limit)` | Return everything at one importance level |
-| `range_scan(gap_start, gap_end, limit)` | Return everything between two levels |
+| Method                                  | Description                                          |
+|-----------------------------------------|------------------------------------------------------|
+| `horizontal(gap, theta, phi, ...)`      | Find nearby items within one shell                   |
+| `grf(theta, phi, ...)`                  | **Geometric Ray Filter** -- drill through all shells |
+| `reverse_ray(start_embedding, ...)`     | Curved semantic trace from outer to inner            |
+| `temporal_grf(theta, phi, ...)`         | Drill through time-based shells                      |
+| `shell_scan(gap, limit)`                | Return everything at one importance level            |
+| `range_scan(gap_start, gap_end, limit)` | Return everything between two levels                 |
 
 ### Configuration
 
-| Method | Description |
-|--------|-------------|
+| Method                      | Description                               |
+|-----------------------------|-------------------------------------------|
 | `fit_projection(save=True)` | Self-calibrate PCA from stored embeddings |
-| `stats()` | Database statistics (gaps, categories, grid) |
-| `cell_density(gap)` | Cell occupancy map for a gap |
+| `stats()`                   | Database statistics (gaps, categories, grid) |
+| `cell_density(gap)`         | Cell occupancy map for a gap              |
 
 ### Custom Boundaries
 
@@ -163,13 +163,13 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 ## Comparison
 
-| | OnionDB | FAISS | ChromaDB | Pinecone | pgvector |
-|---|---------|-------|----------|----------|----------|
-| Dependencies | **0** | numpy | many | cloud SDK | PostgreSQL |
-| Importance hierarchy | **native** | no | no | metadata only | no |
-| Geometric queries | **GRF, ray** | no | no | no | no |
-| Storage | SQLite file | memory/file | SQLite | cloud | server |
-| Setup | `pip install` | `pip install` | `pip install` | API key | DB server |
+|                      | OnionDB        | FAISS         | ChromaDB      | Pinecone      | pgvector   |
+|----------------------|----------------|---------------|---------------|---------------|------------|
+| Dependencies         | **0**          | numpy         | many          | cloud SDK     | PostgreSQL |
+| Importance hierarchy | **native**     | no            | no            | metadata only | no         |
+| Geometric queries    | **GRF, ray**   | no            | no            | no            | no         |
+| Storage              | SQLite file    | memory/file   | SQLite        | cloud         | server     |
+| Setup                | `pip install`  | `pip install` | `pip install` | API key       | DB server  |
 
 ## Benchmark: OnionDB vs Flat Vector Search
 
@@ -177,33 +177,33 @@ We ran a head-to-head A/B comparison against a traditional flat vector database 
 
 ### Results
 
-| Metric | Flat Vector DB | OnionDB |
-|--------|---------------|---------|
-| Avg query latency | 8,024ms | **541ms** |
-| Speed | 1x | **14.8x faster** |
-| Avg Jaccard overlap | -- | **7%** |
+| Metric              | Flat Vector DB | OnionDB          |
+|---------------------|----------------|------------------|
+| Avg query latency   | 8,024ms        | **541ms**        |
+| Speed               | 1x             | **14.8x faster** |
+| Avg Jaccard overlap | --             | **7%**           |
 
 **93% of what OnionDB returns is unique** -- records that the flat database missed entirely.
 
 ### Per-query detail (15 queries across diverse topics)
 
-| Query topic | Overlap | Shared | Unique to OnionDB |
-|-------------|---------|--------|-------------------|
-| Hardware specs | 0% | 0 | 10 |
-| System architecture | 0% | 0 | 10 |
-| Game simulation | 0% | 0 | 10 |
-| Inter-process communication | 18% | 3 | 7 |
-| ML embeddings | 5% | 1 | 9 |
-| OS configuration | 0% | 0 | 10 |
-| Database internals | 11% | 2 | 8 |
-| Error handling | 5% | 1 | 9 |
-| Optimization algorithms | 5% | 1 | 9 |
-| Protocol design | 0% | 0 | 10 |
-| Networking | 25% | 4 | 6 |
-| Model retraining | 0% | 0 | 10 |
-| Math/geometry | 25% | 4 | 6 |
-| System monitoring | 0% | 0 | 10 |
-| Data consolidation | 11% | 2 | 8 |
+| Query topic                 | Overlap | Shared | Unique to OnionDB |
+|-----------------------------|---------|--------|-------------------|
+| Hardware specs              | 0%      | 0      | 10                |
+| System architecture         | 0%      | 0      | 10                |
+| Game simulation             | 0%      | 0      | 10                |
+| Inter-process communication | 18%     | 3      | 7                 |
+| ML embeddings               | 5%      | 1      | 9                 |
+| OS configuration            | 0%      | 0      | 10                |
+| Database internals          | 11%     | 2      | 8                 |
+| Error handling              | 5%      | 1      | 9                 |
+| Optimization algorithms     | 5%      | 1      | 9                 |
+| Protocol design             | 0%      | 0      | 10                |
+| Networking                  | 25%     | 4      | 6                 |
+| Model retraining            | 0%      | 0      | 10                |
+| Math/geometry               | 25%     | 4      | 6                 |
+| System monitoring           | 0%      | 0      | 10                |
+| Data consolidation          | 11%     | 2      | 8                 |
 
 ### Why the difference?
 
