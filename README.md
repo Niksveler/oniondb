@@ -175,6 +175,32 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 4. **Cells**: The sphere is divided into a 12x6 grid. Queries search the target cell plus neighbors for efficiency.
 
+## Scaling
+
+OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries only scan the target cell and its neighbors (~9 cells), not the entire database. This means query time grows with cell density, not total record count.
+
+| Records | Avg per cell | GRF performance | Verdict          |
+|---------|--------------|-----------------|------------------|
+| 1K      |  ~3          | instant         | ✅ no sweat       |
+| 10K     |  ~28         | instant         | ✅ smooth         |
+| 100K    |  ~280        | fast            | ✅ solid          |
+| 500K    |  ~1,400      | noticeable      | ⚠️ still usable   |
+| 1M+     |  ~2,800+     | slowing down    | ❌ consider alternatives |
+
+### What limits scaling
+
+- **Cosine similarity in Python** — no SIMD or ANN acceleration. Each candidate record requires a full dot product computation.
+- **`fit_projection()`** — reads all embeddings to compute PCA. This is O(n) and will be slow at millions of records.
+- **SQLite single-writer** — concurrent writes are serialized. Reads are concurrent via WAL mode.
+
+### What helps
+
+- The grid **partitions** the search space — you're always scanning ~1/72 of each shell, not everything.
+- **Shell structure** naturally distributes data — most real datasets have more trivial records than core ones, spreading load across gaps.
+- For datasets beyond 500K, you can increase grid resolution by subclassing, or use OnionDB as a **complementary index** alongside FAISS/pgvector for the raw ANN search.
+
+> **OnionDB is designed for human-scale datasets** (up to ~500K records) where importance stratification matters more than raw vector throughput. It doesn't compete with FAISS at 100M scale — it solves a different problem.
+
 ## Comparison
 
 |                      | OnionDB       | FAISS        | ChromaDB      | Pinecone      | pgvector   |
