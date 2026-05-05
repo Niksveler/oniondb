@@ -2,7 +2,7 @@
 
 All notable changes to OnionDB will be documented in this file.
 
-## [0.3.1] — 2026-05-05
+## [0.3.2] — 2026-05-05
 
 ### Added
 - **93 tests** — expanded from 60: parametrized boundary mapping, edge cases (importance 0.0/1.0), data integrity checks, CLI integration tests.

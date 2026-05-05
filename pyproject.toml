@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oniondb"
-version = "0.3.1"
+version = "0.3.2"
 description = "A geometric database with importance-stratified shells and zero dependencies."
 readme = "README.md"
 authors = [{name = "Nick Sveler"}]
