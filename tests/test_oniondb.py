@@ -642,22 +642,28 @@ class TestEdgeCases:
     def test_concurrent_reads(self, tmp_path):
         """Multiple threads reading simultaneously should not error."""
         import threading
-        db = OnionDB(str(tmp_path / "read.db"))
+        db_path = str(tmp_path / "read.db")
+        db = OnionDB(db_path)
         for i in range(50):
             db.insert(f"r-{i}", f"Read test {i}", importance=random.uniform(0.1, 0.9))
+        db.close()
 
         errors = []
         results = []
 
         def reader(thread_id):
+            # Each thread opens its own connection (SQLite best practice)
+            local_db = OnionDB(db_path)
             try:
                 for i in range(10):
-                    mem = db.get(f"r-{i}")
+                    mem = local_db.get(f"r-{i}")
                     if mem:
                         results.append(mem["id"])
-                    db.shell_scan(gap=random.randint(0, 4), limit=5)
+                    local_db.shell_scan(gap=random.randint(0, 4), limit=5)
             except Exception as e:
                 errors.append(e)
+            finally:
+                local_db.close()
 
         threads = [threading.Thread(target=reader, args=(t,)) for t in range(5)]
         for t in threads:
@@ -667,7 +673,6 @@ class TestEdgeCases:
 
         assert len(errors) == 0, f"Read errors: {errors}"
         assert len(results) > 0
-        db.close()
 
 
 # ═══════════════════════════════════════
