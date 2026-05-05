@@ -175,6 +175,72 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 4. **Cells**: The sphere is divided into a 12x6 grid. Queries search the target cell plus neighbors for efficiency.
 
+## Technical Details
+
+### PCA Projection — how embeddings become coordinates
+
+OnionDB does **not** use raw embedding dimensions as angles. That would produce clustered, unevenly distributed coordinates (our v0 prototype only achieved 29% cell occupancy).
+
+Instead, `fit_projection()` computes a data-driven PCA (Principal Component Analysis) from all stored embeddings:
+
+1. **Center** all embeddings by subtracting the mean — removes magnitude bias
+2. **Extract** the two directions of maximum variance (PC1, PC2) using power iteration
+3. **Project** each embedding onto PC1 → theta, PC2 → phi
+4. **Linearly rescale** using stored min/max ranges to fill [-180°, 180°] × [-90°, 90°]
+
+Result: **88% cell occupancy** (vs 29% with naive projection), and **93% recall@10** in leave-one-out benchmarks.
+
+```python
+# After inserting enough data, calibrate once:
+stats = db.fit_projection()
+# Saves pca_projection.json next to your .db file
+# All future inserts and queries use the learned projection
+```
+
+### GRF — not just cosine search
+
+A common first impression: "GRF is just cosine similarity with extra steps." Here's what actually happens:
+
+1. **Cell partitioning** — the query direction (θ, φ) maps to a grid cell. SQL filters to that cell + neighbors only (`WHERE (cell_theta, cell_phi) IN (...)`). This is a spatial index, not a full scan.
+2. **Per-shell execution** — GRF runs this search independently in **each importance shell**. A flat vector DB returns the top-k globally; GRF returns top-k **per importance level**.
+3. **Cosine ranking** — within each cell partition, candidates are ranked by cosine similarity to the query embedding. Cosine is the ranking metric, not the search mechanism.
+
+The result: records that a flat database buries (because they're "low importance" and score lower globally) appear naturally in their respective shells.
+
+### Reverse Ray — the gravity kernel
+
+The reverse ray traces a path from outer shells inward. The "gravity" that pulls the ray is **greedy cosine similarity with position inheritance**:
+
+1. Start at the outermost shell. Find the best cosine match to the query embedding.
+2. Take that match's (θ, φ) position as the new search direction.
+3. Move one shell inward. Search again from the new direction.
+4. Repeat until reaching the core (gap 0).
+
+At each hop, the ray **bends** — it follows where semantic similarity leads, not a fixed direction. The accumulated angular deviation between hops is the **curvature**.
+
+### Curvature — what it measures
+
+Curvature is the total angular deviation between consecutive hops of a reverse ray. It's measured in degrees.
+
+- **Low curvature** (< 15°) → topic is **coherently organized** across all importance levels. The same semantic cluster exists at every depth.
+- **High curvature** (> 45°) → topic is **fragmented**. Related content exists at different importance levels but in different semantic neighborhoods.
+
+This is diagnostic information that flat vector search literally cannot produce. It tells you about the **topology** of your data on a given topic.
+
+```python
+trace = db.reverse_ray(start_embedding=query_emb)
+if trace["straight"]:
+    print("Knowledge is well-organized across all depths")
+else:
+    print(f"Fragmented: {trace['curvature']}° total deviation over {trace['n_hops']} hops")
+```
+
+### Embedding model consistency
+
+**All records must use the same embedding model.** PCA projection is fitted on a specific embedding space. Mixing models (e.g., inserting with `all-MiniLM-L6-v2` and querying with `text-embedding-ada-002`) produces meaningless coordinates.
+
+This is not OnionDB-specific — it's a universal constraint of all embedding-based databases. OnionDB simply makes it explicit.
+
 ## Scaling
 
 OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries only scan the target cell and its neighbors (~9 cells), not the entire database. This means query time grows with cell density, not total record count.
