@@ -1,6 +1,6 @@
 # 🧅 OnionDB
 
-[![PyPI](https://img.shields.io/pypi/v/oniondb?v=0.3.0)](https://pypi.org/project/oniondb/)
+[![PyPI](https://img.shields.io/pypi/v/oniondb?v=0.3.1)](https://pypi.org/project/oniondb/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-blue)]()
@@ -10,6 +10,10 @@
 Your data has a *location*, not just a vector.
 
 *Originally developed for the AIGalaxy cognitive memory field; extracted for standalone use.*
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Niksveler/oniondb/main/docs/oniondb_diagram.png" alt="OnionDB Architecture" width="600">
+</p>
 
 ---
 
