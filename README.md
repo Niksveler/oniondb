@@ -160,6 +160,7 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 | `delete(id)`                           | Delete a record by ID                                |
 | `count(gap=None)`                      | Count records (optionally per gap)                   |
 | `batch_insert(items)`                  | Insert multiple records in a single transaction      |
+| `close()`                              | Close the database connection                        |
 
 ### Query Operations
 
@@ -190,6 +191,10 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 # Higher grid resolution for larger datasets (default: 12×6 = 72 cells)
 db = OnionDB("large.db", theta_cells=24, phi_cells=12)  # 288 cells
+
+# Context manager — auto-closes on exit
+with OnionDB("session.db") as db:
+    db.insert("x", "auto-close on exit", importance=0.5)
 ```
 
 ### CLI Inspector

@@ -8,10 +8,12 @@ All notable changes to OnionDB will be documented in this file.
 - **93 tests** — expanded from 60: parametrized boundary mapping, edge cases (importance 0.0/1.0), data integrity checks, CLI integration tests.
 - **`N_TEMPORAL_GAPS` class constant** — replaces magic number in `temporal_grf()`.
 - **`from __future__ import annotations`** — enables precise generic type hints (`tuple[int, int]`, `list[dict]`).
+- **GitHub Actions CI** — full matrix (Python 3.9–3.13), numpy coexistence job, coverage gate (≥80%).
 
 ### Fixed
 - **Example bug** — `basic_usage.py` and `quickstart.py` referenced non-existent `similarity` field (should be `score`).
 - **Reindex N+1 query** — `reindex()` no longer runs per-record sub-queries for angle lookup; theta/phi included in initial SELECT.
+- **Concurrent reads test** — `test_concurrent_reads` now uses per-thread database connections (fixes SQLite `InterfaceError` on Python 3.12+/Linux).
 - **PEP 8 imports** — consolidated `import os` to module top in both examples.
 - **Crash-safe examples** — both examples now clean up stale `.db` files on startup.
 
