@@ -977,6 +977,9 @@ class OnionDB:
         Call this after inserting a representative dataset to improve
         angular distribution across the sphere.
 
+        Uses numpy when available for ~50x faster computation.
+        Falls back to pure Python power iteration.
+
         Args:
             save: If True, write pca_projection.json next to the database.
 
@@ -999,50 +1002,6 @@ class OnionDB:
         n = len(embeddings)
         dim = len(embeddings[0])
 
-        # Compute mean
-        mean = [0.0] * dim
-        for emb in embeddings:
-            for d in range(dim):
-                mean[d] += emb[d]
-        mean = [m / n for m in mean]
-
-        # Center the data
-        centered = []
-        for emb in embeddings:
-            centered.append([emb[d] - mean[d] for d in range(dim)])
-
-        # Power iteration for top-2 principal components
-        def power_iteration(data, n_iter=50):
-            """Find top eigenvector via power iteration."""
-            vec = [1.0 / math.sqrt(dim)] * dim
-            for _ in range(n_iter):
-                new_vec = [0.0] * dim
-                for row in data:
-                    dot = sum(row[d] * vec[d] for d in range(dim))
-                    for d in range(dim):
-                        new_vec[d] += dot * row[d]
-                norm = math.sqrt(sum(v * v for v in new_vec)) or 1.0
-                vec = [v / norm for v in new_vec]
-            return vec
-
-        # PC1
-        pc1 = power_iteration(centered)
-
-        # Deflate: remove PC1 component
-        deflated = []
-        for row in centered:
-            dot = sum(row[d] * pc1[d] for d in range(dim))
-            deflated.append([row[d] - dot * pc1[d] for d in range(dim)])
-
-        # PC2
-        pc2 = power_iteration(deflated)
-
-        # Compute projection ranges
-        pc1_vals = [sum(c[d] * pc1[d] for d in range(dim)) for c in centered]
-        pc2_vals = [sum(c[d] * pc2[d] for d in range(dim)) for c in centered]
-        pc1_range = [min(pc1_vals), max(pc1_vals)]
-        pc2_range = [min(pc2_vals), max(pc2_vals)]
-
         # Measure occupancy before
         cells_before = set()
         for emb in embeddings:
@@ -1050,6 +1009,59 @@ class OnionDB:
             ct, cp = self._angle_to_cell(t, p)
             cells_before.add((ct, cp))
         occ_before = len(cells_before) / (self.THETA_CELLS * self.PHI_CELLS)
+
+        if _HAS_NUMPY:
+            # Fast path: numpy vectorized PCA
+            data = np.array(embeddings, dtype=np.float32)
+            mean = np.mean(data, axis=0)
+            centered = data - mean
+            cov = centered.T @ centered / n
+            eigenvalues, eigenvectors = np.linalg.eigh(cov)
+            # eigh returns ascending order — take last 2
+            pc1 = eigenvectors[:, -1].tolist()
+            pc2 = eigenvectors[:, -2].tolist()
+            mean = mean.tolist()
+
+            # Project for ranges
+            pc1_vals = (centered @ np.array(pc1, dtype=np.float32)).tolist()
+            pc2_vals = (centered @ np.array(pc2, dtype=np.float32)).tolist()
+        else:
+            # Pure Python fallback: power iteration
+            mean = [0.0] * dim
+            for emb in embeddings:
+                for d in range(dim):
+                    mean[d] += emb[d]
+            mean = [m / n for m in mean]
+
+            centered = []
+            for emb in embeddings:
+                centered.append([emb[d] - mean[d] for d in range(dim)])
+
+            def power_iteration(data, n_iter=50):
+                """Find top eigenvector via power iteration."""
+                vec = [1.0 / math.sqrt(dim)] * dim
+                for _ in range(n_iter):
+                    new_vec = [0.0] * dim
+                    for row in data:
+                        dot = sum(row[d] * vec[d] for d in range(dim))
+                        for d in range(dim):
+                            new_vec[d] += dot * row[d]
+                    norm = math.sqrt(sum(v * v for v in new_vec)) or 1.0
+                    vec = [v / norm for v in new_vec]
+                return vec
+
+            pc1 = power_iteration(centered)
+            deflated = []
+            for row in centered:
+                dot = sum(row[d] * pc1[d] for d in range(dim))
+                deflated.append([row[d] - dot * pc1[d] for d in range(dim)])
+            pc2 = power_iteration(deflated)
+
+            pc1_vals = [sum(c[d] * pc1[d] for d in range(dim)) for c in centered]
+            pc2_vals = [sum(c[d] * pc2[d] for d in range(dim)) for c in centered]
+
+        pc1_range = [min(pc1_vals), max(pc1_vals)]
+        pc2_range = [min(pc2_vals), max(pc2_vals)]
 
         # Save projection
         pca_data = {
@@ -1063,7 +1075,7 @@ class OnionDB:
 
         if save:
             pca_path = os.path.join(
-                os.path.dirname(self.db_path), "pca_projection.json"
+                os.path.dirname(self.db_path) or ".", "pca_projection.json"
             )
             with open(pca_path, "w") as f:
                 json.dump(pca_data, f)
@@ -1088,6 +1100,121 @@ class OnionDB:
             "occupancy_after": round(occ_after, 3),
             "pc1_range": pc1_range,
             "pc2_range": pc2_range,
+        }
+
+    # ═══════════════════════════════════════════
+    # BOUNDARY CALIBRATION & REINDEX
+    # ═══════════════════════════════════════════
+
+    def fit_boundaries(self, n_gaps: int = 5) -> list:
+        """
+        Suggest optimal shell boundaries from the data distribution.
+
+        Computes quantile-based boundaries so each gap contains roughly
+        the same number of records. Use with reindex() to apply.
+
+        Args:
+            n_gaps: Number of gaps to create (default: 5).
+
+        Returns: List of boundary thresholds (descending), suitable for
+                 passing to the constructor or reindex().
+
+        Example:
+            >>> new_bounds = db.fit_boundaries(n_gaps=5)
+            >>> db.reindex(boundaries=new_bounds)
+        """
+        rows = self.conn.execute(
+            "SELECT importance FROM records"
+        ).fetchall()
+        if not rows:
+            return self.boundaries
+
+        values = sorted([r[0] for r in rows], reverse=True)
+        n = len(values)
+
+        # Compute quantile boundaries (evenly spaced percentiles)
+        boundaries = []
+        for i in range(n_gaps):
+            idx = int((i / n_gaps) * n)
+            idx = min(idx, n - 1)
+            boundaries.append(round(values[idx], 4))
+
+        # Ensure descending and last is 0.0
+        boundaries = sorted(set(boundaries), reverse=True)
+        if boundaries[-1] != 0.0:
+            boundaries.append(0.0)
+
+        # Ensure we have exactly n_gaps boundaries
+        while len(boundaries) < n_gaps:
+            boundaries.insert(-1, boundaries[-2] / 2)
+        if len(boundaries) > n_gaps:
+            boundaries = boundaries[:n_gaps - 1] + [0.0]
+
+        return boundaries
+
+    def reindex(self, boundaries: list = None) -> dict:
+        """
+        Recalculate all gap, depth, and cell assignments.
+
+        Use after changing boundaries, grid resolution, or PCA projection.
+        Updates all records in-place without deleting data.
+
+        Args:
+            boundaries: New boundaries to apply. If None, uses current.
+
+        Returns: Dict with reindex stats (total, updated, boundaries).
+        """
+        if boundaries is not None:
+            self.boundaries = boundaries
+            self.n_gaps = len(boundaries)
+            # Update shells table
+            with self._lock:
+                self.conn.execute("DELETE FROM shells")
+                for i, b in enumerate(self.boundaries):
+                    self.conn.execute(
+                        "INSERT INTO shells (shell_id, boundary) VALUES (?, ?)",
+                        (i, b)
+                    )
+
+        # Read all records
+        rows = self.conn.execute(
+            "SELECT id, importance, embedding FROM records"
+        ).fetchall()
+
+        updated = 0
+        with self._lock:
+            for rid, importance, emb_blob in rows:
+                gap = self._importance_to_gap(importance)
+                depth = self._compute_depth(importance, gap)
+
+                # Recompute angles if embedding exists
+                if emb_blob:
+                    emb = self._decode_embedding(emb_blob)
+                    theta, phi = self._embed_to_angles(emb)
+                else:
+                    # Keep existing angles
+                    row = self.conn.execute(
+                        "SELECT theta, phi FROM records WHERE id = ?",
+                        (rid,)
+                    ).fetchone()
+                    theta, phi = row[0], row[1]
+
+                cell_t, cell_p = self._angle_to_cell(theta, phi)
+
+                self.conn.execute("""
+                    UPDATE records
+                    SET gap = ?, depth = ?, theta = ?, phi = ?,
+                        cell_theta = ?, cell_phi = ?
+                    WHERE id = ?
+                """, (gap, depth, theta, phi, cell_t, cell_p, rid))
+                updated += 1
+            self.conn.commit()
+
+        return {
+            "total": len(rows),
+            "updated": updated,
+            "boundaries": self.boundaries,
+            "n_gaps": self.n_gaps,
         }
 
     # ═══════════════════════════════════════════

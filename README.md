@@ -170,6 +170,8 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 | Method                      | Description                                     |
 |-----------------------------|--------------------------------------------------|
 | `fit_projection(save=True)` | Self-calibrate PCA from stored embeddings        |
+| `fit_boundaries(n_gaps=5)`  | Suggest quantile-based boundaries from data      |
+| `reindex(boundaries=None)`  | Recalculate all gap/depth/cell assignments       |
 | `stats()`                   | Database statistics (gaps, categories, grid)     |
 | `cell_density(gap)`         | Cell occupancy map for a gap                     |
 

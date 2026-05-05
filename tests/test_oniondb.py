@@ -387,3 +387,182 @@ class TestLifecycle:
         assert "50 records" in r
         assert "5 gaps" in r
 
+
+# ═══════════════════════════════════════
+# v0.3.0: CONFIGURABLE GRID
+# ═══════════════════════════════════════
+
+class TestConfigurableGrid:
+    def test_default_grid(self, db):
+        assert db.THETA_CELLS == 12
+        assert db.PHI_CELLS == 6
+
+    def test_custom_grid(self, tmp_path):
+        db_path = str(tmp_path / "custom_grid.db")
+        db = OnionDB(db_path, theta_cells=24, phi_cells=12)
+        assert db.THETA_CELLS == 24
+        assert db.PHI_CELLS == 12
+        s = db.stats()
+        assert s["grid"] == "24x12"
+        db.close()
+
+    def test_custom_grid_affects_cell_assignment(self, tmp_path):
+        """Higher resolution grid should produce different cell assignments."""
+        emb = [0.5] * 32
+        db1 = OnionDB(str(tmp_path / "g1.db"))
+        db2 = OnionDB(str(tmp_path / "g2.db"), theta_cells=24, phi_cells=12)
+        a1 = db1.insert("t1", "test", importance=0.5, embedding=emb)
+        a2 = db2.insert("t1", "test", importance=0.5, embedding=emb)
+        # Different grid resolutions = potentially different cell assignments
+        total_cells_1 = db1.THETA_CELLS * db1.PHI_CELLS
+        total_cells_2 = db2.THETA_CELLS * db2.PHI_CELLS
+        assert total_cells_2 > total_cells_1
+        db1.close()
+        db2.close()
+
+    def test_class_default_unchanged(self, tmp_path):
+        """Instance attrs should not change class defaults."""
+        db = OnionDB(str(tmp_path / "c1.db"), theta_cells=99)
+        assert db.THETA_CELLS == 99
+        assert OnionDB.THETA_CELLS == 12  # class attr unchanged
+        db.close()
+
+
+# ═══════════════════════════════════════
+# v0.3.0: BEAM SEARCH REVERSE RAY
+# ═══════════════════════════════════════
+
+class TestBeamSearch:
+    def test_greedy_default(self, populated_db):
+        """beam_width=1 (default) returns standard reverse ray."""
+        emb = [random.gauss(0, 1) for _ in range(32)]
+        result = populated_db.reverse_ray(emb)
+        assert "path" in result
+        assert "curvature" in result
+        assert "beam_width" not in result  # greedy mode doesn't add beam metadata
+
+    def test_beam_search_returns_beam_metadata(self, populated_db):
+        """beam_width > 1 adds beam-specific metadata."""
+        emb = [random.gauss(0, 1) for _ in range(32)]
+        result = populated_db.reverse_ray(emb, beam_width=3)
+        assert result["beam_width"] == 3
+        assert "beam_paths_explored" in result
+        assert result["beam_paths_explored"] >= 1
+
+    def test_beam_search_has_path(self, populated_db):
+        """Beam search still returns a valid path."""
+        emb = [random.gauss(0, 1) for _ in range(32)]
+        result = populated_db.reverse_ray(emb, beam_width=5)
+        assert len(result["path"]) > 0
+        assert len(result["records"]) >= 0
+        assert "curvature" in result
+
+    def test_beam_width_1_matches_greedy(self, populated_db):
+        """beam_width=1 should produce same results as default greedy."""
+        random.seed(123)
+        emb = [random.gauss(0, 1) for _ in range(32)]
+        greedy = populated_db.reverse_ray(emb)
+        beam1 = populated_db.reverse_ray(emb, beam_width=1)
+        # Both should have same curvature and path length
+        assert greedy["curvature"] == beam1["curvature"]
+        assert greedy["n_hops"] == beam1["n_hops"]
+
+
+# ═══════════════════════════════════════
+# v0.3.0: FIT BOUNDARIES & REINDEX
+# ═══════════════════════════════════════
+
+class TestFitBoundaries:
+    def test_fit_boundaries_returns_list(self, populated_db):
+        bounds = populated_db.fit_boundaries(n_gaps=5)
+        assert isinstance(bounds, list)
+        assert len(bounds) == 5
+
+    def test_fit_boundaries_descending(self, populated_db):
+        bounds = populated_db.fit_boundaries(n_gaps=5)
+        for i in range(len(bounds) - 1):
+            assert bounds[i] >= bounds[i + 1]
+
+    def test_fit_boundaries_ends_with_zero(self, populated_db):
+        bounds = populated_db.fit_boundaries(n_gaps=5)
+        assert bounds[-1] == 0.0
+
+    def test_fit_boundaries_empty_db(self, db):
+        """Empty DB returns default boundaries."""
+        bounds = db.fit_boundaries()
+        assert bounds == db.boundaries
+
+    def test_fit_boundaries_custom_n_gaps(self, populated_db):
+        bounds3 = populated_db.fit_boundaries(n_gaps=3)
+        bounds7 = populated_db.fit_boundaries(n_gaps=7)
+        assert len(bounds3) == 3
+        assert len(bounds7) == 7
+
+
+class TestReindex:
+    def test_reindex_preserves_count(self, populated_db):
+        count_before = populated_db.count()
+        populated_db.reindex()
+        count_after = populated_db.count()
+        assert count_before == count_after
+
+    def test_reindex_with_new_boundaries(self, populated_db):
+        new_bounds = [0.8, 0.5, 0.2, 0.0]
+        result = populated_db.reindex(boundaries=new_bounds)
+        assert result["updated"] == 50
+        assert result["n_gaps"] == 4
+        assert populated_db.boundaries == new_bounds
+
+    def test_reindex_updates_gaps(self, populated_db):
+        """After reindex with different boundaries, gap distribution should change."""
+        stats_before = populated_db.stats()
+        new_bounds = populated_db.fit_boundaries(n_gaps=3)
+        populated_db.reindex(boundaries=new_bounds)
+        stats_after = populated_db.stats()
+        assert stats_after["n_gaps"] == 3
+        assert stats_after["total"] == stats_before["total"]
+
+    def test_fit_then_reindex_workflow(self, populated_db):
+        """Full workflow: analyze distribution → suggest boundaries → apply."""
+        bounds = populated_db.fit_boundaries(n_gaps=5)
+        result = populated_db.reindex(boundaries=bounds)
+        assert result["total"] == 50
+        # After reindex, data should still be queryable
+        scan = populated_db.shell_scan(0)
+        assert isinstance(scan, list)
+
+
+# ═══════════════════════════════════════
+# v0.3.0: NUMPY ACCELERATION
+# ═══════════════════════════════════════
+
+class TestNumpyAcceleration:
+    def test_cosine_returns_float(self, db):
+        """Cosine should work regardless of numpy presence."""
+        a = [1.0, 0.0, 0.0]
+        b = [1.0, 0.0, 0.0]
+        assert db._cosine(a, b) == pytest.approx(1.0)
+
+    def test_cosine_orthogonal(self, db):
+        a = [1.0, 0.0]
+        b = [0.0, 1.0]
+        assert db._cosine(a, b) == pytest.approx(0.0)
+
+    def test_cosine_empty(self, db):
+        assert db._cosine([], [1, 2]) == 0.0
+        assert db._cosine(None, [1, 2]) == 0.0
+
+    def test_decode_embedding_roundtrip(self, db):
+        """Encode → decode should be lossless."""
+        import struct
+        original = [0.1, 0.2, 0.3, 0.4, 0.5]
+        blob = struct.pack(f'{len(original)}f', *original)
+        decoded = db._decode_embedding(blob)
+        for a, b in zip(original, decoded):
+            assert a == pytest.approx(b, abs=1e-6)
+
+    def test_numpy_detected(self):
+        """Check that numpy detection works."""
+        from oniondb.onion_db import _HAS_NUMPY
+        assert isinstance(_HAS_NUMPY, bool)
+

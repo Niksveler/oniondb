@@ -1,0 +1,42 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12", "3.14"]
+        numpy: [true, false]
+    
+    name: Python ${{ matrix.python-version }} (numpy=${{ matrix.numpy }})
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          allow-prereleases: true
+      
+      - name: Install base dependencies
+        run: pip install pytest pytest-cov
+      
+      - name: Install numpy (optional)
+        if: matrix.numpy
+        run: pip install numpy
+      
+      - name: Install OnionDB
+        run: pip install -e .
+      
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+      
+      - name: Verify CLI
+        run: python -m oniondb --help

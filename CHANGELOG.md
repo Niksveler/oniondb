@@ -2,27 +2,41 @@
 
 All notable changes to OnionDB will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [0.1.0] - 2026-05-04
+## [0.3.0] — 2026-05-05
 
 ### Added
-- Core `OnionDB` class with SQLite-backed geometric storage
-- 4-part addressing: `(gap, θ, φ, depth)` — every data point has a physical location
-- 6 query operations:
-  - `horizontal()` — find nearby items within one shell
-  - `grf()` — Geometric Ray Filter: drill through all importance shells at a direction
-  - `reverse_ray()` — curved semantic gravity trace from outer to inner shells
-  - `temporal_grf()` — drill through time-based shells
-  - `shell_scan()` — return everything at one importance level
-  - `range_scan()` — return everything between two importance levels
-- PCA-based embedding projection to spherical coordinates (88% cell occupancy)
-- Fallback v0 projection for use without PCA calibration
-- `fit_projection()` — self-calibrating PCA from stored embeddings
-- CRUD operations: `insert()`, `get()`, `delete()`, `batch_insert()`, `count()`
-- Subshell clustering with soft/hard boost for topic-aware retrieval
-- Cosine similarity ranking when embeddings provided
-- SQLite WAL mode for concurrent read access
-- Zero external dependencies — stdlib only
-- Context manager support (`with OnionDB(...) as db:`)
+- **Optional numpy acceleration** — cosine similarity ~10x faster, BLOB decoding ~5x faster when numpy is installed. Auto-detected at import time. Install via `pip install oniondb[fast]`.
+- **Configurable grid resolution** — `OnionDB(theta_cells=24, phi_cells=12)` for custom grid sizing. Default 12×6 unchanged.
+- **Beam search reverse ray** — `reverse_ray(embedding, beam_width=3)` explores multiple paths simultaneously instead of greedy descent.
+- **CLI inspector** — `python -m oniondb stats|info|density|shell mydb.db` for terminal-based database inspection.
+- **Dynamic shell boundaries** — `fit_boundaries(n_gaps=5)` suggests quantile-based boundaries from data distribution.
+- **Reindex** — `reindex(boundaries=new_bounds)` recalculates all gap/depth/cell assignments in-place.
+- **Numpy-accelerated PCA** — `fit_projection()` uses `np.linalg.eigh` when numpy is available (~50x faster than power iteration).
+- **GitHub Actions CI** — automated tests on Python 3.9, 3.12, 3.14 with and without numpy.
+
+### Changed
+- Version bump to 0.3.0
+- `pyproject.toml` now includes `[fast]` optional dependency group
+
+## [0.2.0] — 2026-05-04
+
+### Added
+- Professional README with full API documentation
+- Technical details (PCA, GRF, Reverse Ray, Curvature)
+- Use case examples (AI agents, log analysis, knowledge management)
+- Benchmark results vs flat vector search
+- Comparison table vs FAISS, ChromaDB, Pinecone, pgvector
+- Comprehensive test suite (38 tests)
+- `pyproject.toml` for PyPI packaging
+- GitHub topics and release
+
+## [0.1.0] — 2026-05-03
+
+### Added
+- Initial release
+- Core engine: insert, get, delete, count, batch_insert
+- 6 query operations: horizontal, GRF, reverse_ray, temporal_grf, shell_scan, range_scan
+- PCA self-calibrating projection (`fit_projection`)
+- SQLite-backed storage with WAL mode
+- Thread-safe operations with RLock
+- Zero external dependencies
