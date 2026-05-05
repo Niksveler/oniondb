@@ -4,6 +4,8 @@
 
 Your data has a *location*, not just a vector.
 
+*Originally developed for the [AIGalaxy](https://github.com/Niksveler/aigalaxy) cognitive memory field; extracted for standalone use.*
+
 ---
 
 OnionDB organizes data in concentric shells -- like layers of an onion. Every record has a 4-part geometric address `(gap, theta, phi, depth)` based on its importance and semantic content. This enables queries that flat vector databases can't do:
@@ -173,7 +175,7 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 3. **Address**: Every record gets a 4-part address: `(gap, theta, phi, depth)` where depth is the position within the gap based on exact importance.
 
-4. **Cells**: The sphere is divided into a 12x6 grid. Queries search the target cell plus neighbors for efficiency.
+4. **Cells**: 72 cells via 12×6 latitude/longitude grid (naive partition, not equal-area). Polar cell compression is mitigated by PCA linear rescaling. Configurable via `THETA_CELLS` and `PHI_CELLS` class attributes. Queries search the target cell plus neighbors for efficiency.
 
 ## Technical Details
 
