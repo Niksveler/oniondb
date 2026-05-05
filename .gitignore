@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Databases (user data, not shipped)
+*.db
+*.db-shm
+*.db-wal
+
+# PCA projection (generated per-dataset)
+pca_projection.json
+subshell_centroids.json
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results (generated)
+ab_results.json

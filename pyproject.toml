@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "oniondb"
+version = "0.1.0"
+description = "A geometric memory database with importance-stratified shells and zero dependencies."
+readme = "README.md"
+authors = [{name = "Nick Sveler"}]
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+keywords = [
+    "database", "geometric", "memory", "vector", "embeddings",
+    "importance", "hierarchical", "sqlite", "shell", "retrieval"
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+    "Development Status :: 3 - Alpha",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-cov"]
+
+[project.urls]
+Homepage = "https://github.com/Niksveler/oniondb"
+Documentation = "https://github.com/Niksveler/oniondb#readme"
+Issues = "https://github.com/Niksveler/oniondb/issues"
+
+[tool.setuptools.packages.find]
+include = ["oniondb*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
