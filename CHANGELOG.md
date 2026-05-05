@@ -2,6 +2,17 @@
 
 All notable changes to OnionDB will be documented in this file.
 
+## [0.3.3] — 2026-05-05
+
+### Fixed
+- **README** — restored full documentation (hero image, use cases, benchmarks, technical details) lost in previous update.
+- **Install section** — separated `pip install` commands into individual code blocks for clean copy-paste.
+- **API Reference** — added missing `close()` method and context manager usage.
+- **Scaling table** — fixed emoji rendering (❎ → ❌) for 1M+ row.
+
+### Changed
+- CHANGELOG updated with CI stability fixes (concurrent reads, coverage config).
+
 ## [0.3.2] — 2026-05-05
 
 ### Added
