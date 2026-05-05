@@ -173,7 +173,7 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 ## Benchmark: OnionDB vs Flat Vector Search
 
-We ran a head-to-head A/B comparison against a traditional flat vector database (Lantern, a semantic + FTS5 hybrid) on a production dataset of 1,600+ embedded records across 15 diverse queries.
+We ran a head-to-head A/B comparison against a traditional flat vector database (semantic search + FTS5 hybrid) on a production dataset of **1,600+ embedded records** from an AI agent's knowledge base -- spanning hardware docs, software architecture, research notes, session logs, and personal knowledge.
 
 ### Results
 
@@ -185,25 +185,25 @@ We ran a head-to-head A/B comparison against a traditional flat vector database 
 
 **93% of what OnionDB returns is unique** -- records that the flat database missed entirely.
 
-### Per-query detail
+### Per-query detail (15 queries across diverse topics)
 
-| Query | Overlap | Shared | Unique to OnionDB |
-|-------|---------|--------|-------------------|
-| CNC machine spindle | 0% | 0 | 10 |
-| consciousness architecture | 0% | 0 | 10 |
-| village simulation NPC mood | 0% | 0 | 10 |
-| Venus IDE twin communication | 18% | 3 | 7 |
-| memory embedding Andromeda | 5% | 1 | 9 |
-| PowerShell execution policy | 0% | 0 | 10 |
-| OnionDB geometric projection | 11% | 2 | 8 |
-| fear survival signal | 5% | 1 | 9 |
-| Karpathy optimization loop | 5% | 1 | 9 |
-| session handoff protocol | 0% | 0 | 10 |
-| telepathy between twins | 25% | 4 | 6 |
-| drift engine retrain | 0% | 0 | 10 |
-| Poincare hyperbolic space | 25% | 4 | 6 |
-| homeostasis glucose | 0% | 0 | 10 |
-| quantum foam consolidation | 11% | 2 | 8 |
+| Query topic | Overlap | Shared | Unique to OnionDB |
+|-------------|---------|--------|-------------------|
+| Hardware specs | 0% | 0 | 10 |
+| System architecture | 0% | 0 | 10 |
+| Game simulation | 0% | 0 | 10 |
+| Inter-process communication | 18% | 3 | 7 |
+| ML embeddings | 5% | 1 | 9 |
+| OS configuration | 0% | 0 | 10 |
+| Database internals | 11% | 2 | 8 |
+| Error handling | 5% | 1 | 9 |
+| Optimization algorithms | 5% | 1 | 9 |
+| Protocol design | 0% | 0 | 10 |
+| Networking | 25% | 4 | 6 |
+| Model retraining | 0% | 0 | 10 |
+| Math/geometry | 25% | 4 | 6 |
+| System monitoring | 0% | 0 | 10 |
+| Data consolidation | 11% | 2 | 8 |
 
 ### Why the difference?
 
