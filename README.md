@@ -188,7 +188,7 @@ Instead, `fit_projection()` computes a data-driven PCA (Principal Component Anal
 3. **Project** each embedding onto PC1 → theta, PC2 → phi
 4. **Linearly rescale** using stored min/max ranges to fill [-180°, 180°] × [-90°, 90°]
 
-Result: **88% cell occupancy** (vs 29% with naive projection), and **93% recall@10** in leave-one-out benchmarks.
+Result: **88% cell occupancy** (vs 29% with naive projection), and **93% recall@10** in leave-one-out benchmarks (baseline v0 projection: 68%). This metric measures **projection quality** — how well the PCA mapping preserves semantic neighborhoods on the sphere.
 
 ```python
 # After inserting enough data, calibrate once:
@@ -289,7 +289,7 @@ We ran a head-to-head A/B comparison against a traditional flat vector database 
 | Speed               | 1x             | **14.8x faster** |
 | Avg Jaccard overlap | --             | **7%**           |
 
-**93% of what OnionDB returns is unique** -- records that the flat database missed entirely.
+**93% of results are unique to OnionDB** (Jaccard overlap = 7%) — meaning the flat database missed them entirely. This is a **diversity metric**: OnionDB surfaces records that flat search buries because they're at lower importance levels. Different from recall@10 above, which measures projection quality.
 
 ### Per-query detail (15 queries across diverse topics)
 
