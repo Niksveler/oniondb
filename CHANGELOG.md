@@ -2,6 +2,23 @@
 
 All notable changes to OnionDB will be documented in this file.
 
+## [0.3.1] — 2026-05-05
+
+### Added
+- **93 tests** — expanded from 60: parametrized boundary mapping, edge cases (importance 0.0/1.0), data integrity checks, CLI integration tests.
+- **`N_TEMPORAL_GAPS` class constant** — replaces magic number in `temporal_grf()`.
+- **`from __future__ import annotations`** — enables precise generic type hints (`tuple[int, int]`, `list[dict]`).
+
+### Fixed
+- **Example bug** — `basic_usage.py` and `quickstart.py` referenced non-existent `similarity` field (should be `score`).
+- **Reindex N+1 query** — `reindex()` no longer runs per-record sub-queries for angle lookup; theta/phi included in initial SELECT.
+- **PEP 8 imports** — consolidated `import os` to module top in both examples.
+- **Crash-safe examples** — both examples now clean up stale `.db` files on startup.
+
+### Changed
+- More specific type hints on private methods (`-> tuple[int, int]` instead of `-> tuple`).
+- Misleading comments clarified ("importance level" → "gap (importance band)").
+
 ## [0.3.0] — 2026-05-05
 
 ### Added
