@@ -163,13 +163,13 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 
 ## Comparison
 
-|                      | OnionDB      | FAISS       | ChromaDB    | Pinecone      | pgvector   |
-|----------------------|--------------|-------------|-------------|---------------|------------|
-| Dependencies         | **0**        | numpy       | many        | cloud SDK     | PostgreSQL |
-| Importance hierarchy | **native**   | no          | no          | metadata only | no         |
-| Geometric queries    | **GRF, ray** | no          | no          | no            | no         |
-| Storage              | SQLite file  | memory/file | SQLite      | cloud         | server     |
-| Setup                | `pip install`| `pip install`| `pip install`| API key      | DB server  |
+|                      | OnionDB       | FAISS        | ChromaDB      | Pinecone      | pgvector   |
+|----------------------|---------------|--------------|---------------|---------------|------------|
+| Dependencies         |    **0**      |   numpy      |    many       |  cloud SDK    | PostgreSQL |
+| Importance hierarchy |  **native**   |    no        |     no        | metadata only |     no     |
+| Geometric queries    | **GRF, ray**  |    no        |     no        |      no       |     no     |
+| Storage              |  SQLite file  | memory/file  |   SQLite      |    cloud      |   server   |
+| Setup                | `pip install` | `pip install`| `pip install` |   API key     |  DB server |
 
 ## Benchmark: OnionDB vs Flat Vector Search
 
