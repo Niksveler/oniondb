@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oniondb"
-version = "0.2.0"
+version = "0.3.0"
 description = "A geometric database with importance-stratified shells and zero dependencies."
 readme = "README.md"
 authors = [{name = "Nick Sveler"}]
@@ -31,6 +31,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+fast = ["numpy>=1.21"]
 dev = ["pytest", "pytest-cov"]
 
 [project.urls]

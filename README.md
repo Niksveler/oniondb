@@ -26,7 +26,8 @@ OnionDB organizes data in concentric shells -- like layers of an onion. Every re
 ## Install
 
 ```bash
-pip install oniondb
+pip install oniondb            # zero dependencies
+pip install oniondb[fast]      # optional numpy acceleration (~10x cosine speed)
 ```
 
 ## Quick Start
@@ -53,6 +54,9 @@ profile = db.grf(theta=45.0, phi=10.0, query_embedding=my_embedding)
 trace = db.reverse_ray(start_embedding=my_embedding)
 print(f"Path curvature: {trace['curvature']} degrees")  # 0=straight, high=fragmented
 
+# Beam search -- explore multiple paths (default: greedy)
+trace = db.reverse_ray(start_embedding=my_embedding, beam_width=3)
+
 # Count, get, delete
 print(db.count())        # 3
 print(db.get("idea-1"))  # full record dict
@@ -64,9 +68,13 @@ db.delete("idea-2")      # True
 | Feature                  | Description                                                            |
 |--------------------------|------------------------------------------------------------------------|
 | **Zero dependencies**    | stdlib only -- `sqlite3`, `math`, `struct`, `json`, `os`              |
+| **Numpy acceleration**   | Optional `oniondb[fast]` -- ~10x cosine, ~5x decode. Auto-detected    |
 | **Geometric addressing** | Every record has a location: `(gap, theta, phi, depth)`               |
 | **Importance shells**    | Data stratified by significance -- core vs trivial                    |
 | **6 query operations**   | horizontal, GRF, reverse_ray, temporal_grf, shell_scan, range_scan    |
+| **Beam search**          | `reverse_ray(beam_width=3)` explores multiple paths simultaneously    |
+| **Configurable grid**    | `OnionDB(theta_cells=24, phi_cells=12)` for custom resolution         |
+| **CLI inspector**        | `python -m oniondb stats mydb.db` -- inspect databases from terminal  |
 | **Embedding-agnostic**   | Works with any embedding model (OpenAI, Ollama, sentence-transformers)|
 | **Single-file storage**  | SQLite-backed, portable, copy-paste deployable                        |
 | **Self-calibrating**     | `fit_projection()` builds PCA from your data automatically            |
@@ -165,11 +173,23 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 | `stats()`                   | Database statistics (gaps, categories, grid)     |
 | `cell_density(gap)`         | Cell occupancy map for a gap                     |
 
-### Custom Boundaries
+### Constructor Options
 
 ```python
-# Default: 5 shells at [0.95, 0.85, 0.70, 0.50, 0.00]
+# Default: 5 shells, 12×6 grid
 db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
+
+# Higher grid resolution for larger datasets (default: 12×6 = 72 cells)
+db = OnionDB("large.db", theta_cells=24, phi_cells=12)  # 288 cells
+```
+
+### CLI Inspector
+
+```bash
+python -m oniondb stats mydb.db       # database statistics
+python -m oniondb info mydb.db        # file size, PCA status, numpy detection
+python -m oniondb density mydb.db     # cell occupancy map for gap 0
+python -m oniondb shell mydb.db       # show records in gap 0
 ```
 
 ## How It Works
@@ -262,15 +282,17 @@ OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries
 
 ### What limits scaling
 
-- **Cosine similarity in Python** — no SIMD or ANN acceleration. Each candidate record requires a full dot product computation.
+- **Cosine similarity** — without numpy, each candidate requires a pure Python dot product. Install `oniondb[fast]` for ~10x speedup.
 - **`fit_projection()`** — reads all embeddings to compute PCA. This is O(n) and will be slow at millions of records.
 - **SQLite single-writer** — concurrent writes are serialized. Reads are concurrent via WAL mode.
 
 ### What helps
 
-- The grid **partitions** the search space — you're always scanning ~1/72 of each shell, not everything.
+- **Numpy acceleration** — `pip install oniondb[fast]` uses `np.dot` and `np.frombuffer` for the hot path. ~10x faster cosine, ~5x faster BLOB decoding.
+- **Configurable grid** — `OnionDB(theta_cells=24, phi_cells=12)` creates 288 cells instead of 72, halving per-cell density for large datasets.
+- The grid **partitions** the search space — you're always scanning ~1/72 of each shell (or less with higher resolution), not everything.
 - **Shell structure** naturally distributes data — most real datasets have more trivial records than core ones, spreading load across gaps.
-- For datasets beyond 500K, you can increase grid resolution by subclassing, or use OnionDB as a **complementary index** alongside FAISS/pgvector for the raw ANN search.
+- For datasets beyond 500K, you can use OnionDB as a **complementary index** alongside FAISS/pgvector for the raw ANN search.
 
 > **OnionDB is designed for human-scale datasets** (up to ~500K records) where importance stratification matters more than raw vector throughput. It doesn't compete with FAISS at 100M scale — it solves a different problem.
 
