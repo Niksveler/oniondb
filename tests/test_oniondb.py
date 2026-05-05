@@ -272,6 +272,104 @@ class TestCustomBoundaries:
         db.close()
 
 
+class TestTemporalGRF:
+    def test_temporal_grf_returns_dict(self, populated_db):
+        result = populated_db.temporal_grf(theta=0, phi=0, k_per_gap=3)
+        assert isinstance(result, dict)
+        # temporal_gap column is NULL by default, so result may be empty
+        for tgap, memories in result.items():
+            assert isinstance(tgap, int)
+            assert isinstance(memories, list)
+
+    def test_temporal_grf_with_data(self, db):
+        """Insert with temporal_gap set manually via SQL, then query."""
+        for i in range(10):
+            db.insert(f"t-{i}", f"Temporal item {i}",
+                      importance=0.5 + i * 0.04,
+                      theta=10.0, phi=5.0)
+        # Set temporal_gap directly (normally done by ingestion pipeline)
+        db.conn.execute("UPDATE memories SET temporal_gap = 0 WHERE id IN ('t-0','t-1')")
+        db.conn.execute("UPDATE memories SET temporal_gap = 2 WHERE id IN ('t-5','t-6')")
+        db.conn.commit()
+        result = db.temporal_grf(theta=10.0, phi=5.0, k_per_gap=5)
+        assert isinstance(result, dict)
+        if 0 in result:
+            assert all(m["temporal_gap"] == 0 for m in result[0])
+        if 2 in result:
+            assert all(m["temporal_gap"] == 2 for m in result[2])
+
+    def test_temporal_grf_with_embedding(self, db):
+        emb = [0.5] * 32
+        for i in range(5):
+            db.insert(f"te-{i}", f"Embedded temporal {i}",
+                      importance=0.6, embedding=emb, theta=0, phi=0)
+        db.conn.execute("UPDATE memories SET temporal_gap = 1")
+        db.conn.commit()
+        result = db.temporal_grf(theta=0, phi=0, k_per_gap=3,
+                                  query_embedding=emb)
+        if 1 in result:
+            scores = [m["score"] for m in result[1]]
+            assert scores == sorted(scores, reverse=True)
+
+    def test_temporal_grf_empty(self, db):
+        result = db.temporal_grf(theta=0, phi=0)
+        assert result == {}
+
+
+class TestThreadSafety:
+    def test_concurrent_inserts(self, tmp_path):
+        """Multiple threads inserting simultaneously should not corrupt."""
+        import threading
+        db = OnionDB(str(tmp_path / "thread.db"))
+        errors = []
+
+        def worker(thread_id):
+            try:
+                for i in range(20):
+                    db.insert(f"t{thread_id}-{i}",
+                              f"Thread {thread_id} item {i}",
+                              importance=random.uniform(0.1, 0.9))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+        assert db.count() == 100  # 5 threads × 20 items
+        db.close()
+
+    def test_concurrent_batch_insert(self, tmp_path):
+        """batch_insert from multiple threads should not deadlock."""
+        import threading
+        db = OnionDB(str(tmp_path / "batch_thread.db"))
+        errors = []
+
+        def worker(thread_id):
+            try:
+                items = [
+                    {"id": f"bt{thread_id}-{i}", "content": f"Batch {i}",
+                     "importance": 0.5}
+                    for i in range(10)
+                ]
+                db.batch_insert(items)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+        assert db.count() == 40  # 4 threads × 10 items
+        db.close()
+
+
 # ═══════════════════════════════════════
 # CONTEXT MANAGER & REPR
 # ═══════════════════════════════════════
@@ -288,3 +386,4 @@ class TestLifecycle:
         assert "OnionDB" in r
         assert "50 memories" in r
         assert "5 gaps" in r
+
