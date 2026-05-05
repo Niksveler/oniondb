@@ -4,7 +4,7 @@
 
 Your data has a *location*, not just a vector.
 
-*Originally developed for the [AIGalaxy](https://github.com/Niksveler/aigalaxy) cognitive memory field; extracted for standalone use.*
+*Originally developed for the AIGalaxy cognitive memory field; extracted for standalone use.*
 
 ---
 
