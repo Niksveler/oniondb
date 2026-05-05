@@ -1,6 +1,6 @@
 # 🧅 OnionDB
 
-[![PyPI](https://img.shields.io/pypi/v/oniondb)](https://pypi.org/project/oniondb/)
+[![PyPI](https://img.shields.io/pypi/v/oniondb?v=0.3.0)](https://pypi.org/project/oniondb/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-blue)]()
