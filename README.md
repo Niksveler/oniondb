@@ -65,6 +65,35 @@ db.delete("idea-2")      # True
 | **Self-calibrating**     | `fit_projection()` builds PCA from your data automatically            |
 | **Thread-safe**          | RLock + WAL mode for concurrent access                                |
 
+## Use Cases
+
+### 🤖 AI Agent Memory & RAG
+
+AI agents accumulate knowledge of varying importance — core instructions, learned facts, recent conversations, and trivial observations. Traditional RAG retrieves by semantic similarity alone, burying low-importance context that might be critical. OnionDB's GRF drills through all importance levels at once, giving the agent a **full depth profile** instead of just the top-scoring matches.
+
+### 📊 Log Analysis & Incident Response
+
+Logs have natural severity tiers: CRITICAL → WARNING → INFO → DEBUG. When investigating "database timeout", you need related events at **every severity level**, not just the most similar log lines. A GRF through severity shells gives instant cross-severity triage — from the crash trace down to the debug message that reveals root cause.
+
+### 📚 Knowledge Management
+
+Corporate wikis, Obsidian vaults, and research notebooks contain documents of wildly different importance — foundational architecture docs, recent meeting notes, quick ideas. OnionDB ensures a search for "authentication" surfaces both the core security spec **and** the meeting note where someone mentioned a workaround.
+
+### 🎬 Content Recommendation
+
+Streaming platforms and e-commerce stores have content tiers: blockbusters vs. indie, bestsellers vs. clearance. Standard recommenders favor popular items. OnionDB can drill across popularity shells to deliver **diverse recommendations** — a mix of mainstream hits and hidden gems at the same semantic direction.
+
+### 🔬 Research & Literature Review
+
+Academic papers have inherent importance gradients — landmark papers with 10,000 citations vs. niche studies with 12. When researching a topic, flat search always surfaces the famous papers. A GRF finds both the seminal work **and** the obscure paper with a unique angle that flat retrieval buries on page 5.
+
+### 🏥 Medical Records
+
+Patient histories span critical diagnoses, routine checkups, and minor notes. When a doctor searches "chest pain", they need everything — from the cardiac event to the annual physical that noted mild discomfort. Importance-stratified retrieval ensures **nothing clinically relevant is hidden** by more "prominent" records.
+
+---
+
+> **The common thread:** anywhere data has inherent importance tiers and you need retrieval across all tiers simultaneously. Flat search favors the "loudest" matches. OnionDB gives you the full depth profile.
 ## The Signature Query: GRF (Geometric Ray Filter)
 
 The GRF is what makes OnionDB unique. It "drills a core sample" through every importance shell at a given semantic direction, returning a **depth profile** of how a topic exists at every level of significance.
