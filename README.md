@@ -12,24 +12,9 @@ OnionDB organizes data in concentric shells -- like layers of an onion. Every re
 - **"Drill through ALL importance levels at this semantic direction"** --> GRF (Geometric Ray Filter)
 - **"Trace how this topic connects across depth levels"** --> reverse ray
 
-```
-        ╭───────────────────────────────────╮
-        │          gap 4  (trivial)         │
-        │   ╭───────────────────────────╮   │
-        │   │       gap 3  (low)        │   │
-        │   │   ╭───────────────────╮   │   │
-        │   │   │    gap 2  (mid)   │   │   │
-        │   │   │   ╭───────────╮   │   │   │
-        │   │   │   │   gap 1   │   │   │   │
-        │   │   │   │   ╭───╮   │   │   │   │
-  ──────┼───┼───┼───┼───│ 0 │───┼───┼───┼───┼────── GRF ray drills
-        │   │   │   │   │   │   │   │   │   │       through ALL shells
-        │   │   │   │   ╰───╯   │   │   │   │       at angle (θ, φ)
-        │   │   │   ╰───────────╯   │   │   │
-        │   │   ╰───────────────────╯   │   │
-        │   ╰───────────────────────────╯   │
-        ╰───────────────────────────────────╯
-```
+<p align="center">
+  <img src="docs/oniondb_diagram.png" alt="OnionDB concentric shells with GRF ray" width="500">
+</p>
 
 ## Install
 
