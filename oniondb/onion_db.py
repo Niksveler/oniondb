@@ -10,6 +10,8 @@ Zero external dependencies. SQLite-backed. Embedding-agnostic.
 
 https://github.com/Niksveler/oniondb
 """
+from __future__ import annotations
+
 import sqlite3
 import math
 import struct
@@ -42,6 +44,9 @@ class OnionDB:
     # ─── Angular cell grid resolution ───
     THETA_CELLS = 12   # latitude divisions (-180° to 180°)
     PHI_CELLS = 6      # longitude divisions (-90° to 90°)
+
+    # ─── Temporal axis ───
+    N_TEMPORAL_GAPS = 5  # fixed time-bucket shells (T0=recent, T4=oldest)
 
     def __init__(self, db_path: str = "onion.db", boundaries: list = None,
                  theta_cells: int = None, phi_cells: int = None):
@@ -141,7 +146,7 @@ class OnionDB:
             return 0.5
         return max(0.0, min(1.0, 1.0 - (importance - lower) / (upper - lower)))
 
-    def _angle_to_cell(self, theta: float, phi: float) -> tuple:
+    def _angle_to_cell(self, theta: float, phi: float) -> tuple[int, int]:
         """Convert continuous angles to cell indices."""
         # theta: -180 to 180 → cell 0..THETA_CELLS-1
         ct = int(((theta + 180.0) / 360.0) * self.THETA_CELLS) % self.THETA_CELLS
@@ -149,7 +154,7 @@ class OnionDB:
         cp = int(((phi + 90.0) / 180.0) * self.PHI_CELLS) % self.PHI_CELLS
         return ct, cp
 
-    def _poincare_to_angles(self, x: float, y: float) -> tuple:
+    def _poincare_to_angles(self, x: float, y: float) -> tuple[float, float]:
         """Convert Poincaré (x,y) to (theta, phi) angles in degrees."""
         theta = math.degrees(math.atan2(y, x))  # -180 to 180
         r = math.sqrt(x * x + y * y)
@@ -157,7 +162,7 @@ class OnionDB:
         return theta, phi
 
     @staticmethod
-    def _embed_to_angles_v0(embedding: list) -> tuple:
+    def _embed_to_angles_v0(embedding: list) -> tuple[float, float]:
         """
         DEPRECATED v0 projection. Uses raw emb[0:2].
         Only 29% of cells occupied. Kept for reference.
@@ -188,7 +193,7 @@ class OnionDB:
             except Exception:
                 self._pca = None
 
-    def _embed_to_angles(self, embedding: list) -> tuple:
+    def _embed_to_angles(self, embedding: list) -> tuple[float, float]:
         """
         Project embedding to (theta, phi) using PCA Linear projection.
 
@@ -701,7 +706,7 @@ class OnionDB:
         placeholders = ",".join(["(?,?)" for _ in cells])
 
         result = {}
-        for tgap in range(5):  # 5 temporal gaps
+        for tgap in range(self.N_TEMPORAL_GAPS):
             params = [tgap]
             for t, p in cells:
                 params.extend([t, p])
@@ -811,7 +816,7 @@ class OnionDB:
     # HELPERS
     # ═══════════════════════════════════════════
 
-    def _rows_to_dicts(self, rows: list) -> list:
+    def _rows_to_dicts(self, rows: list[tuple]) -> list[dict]:
         """Convert query rows to record dicts. Expects 14-column rows."""
         results = []
         for r in rows:
@@ -1176,14 +1181,14 @@ class OnionDB:
                         (i, b)
                     )
 
-        # Read all records
+        # Read all records (include theta/phi to avoid N+1 sub-queries)
         rows = self.conn.execute(
-            "SELECT id, importance, embedding FROM records"
+            "SELECT id, importance, embedding, theta, phi FROM records"
         ).fetchall()
 
         updated = 0
         with self._lock:
-            for rid, importance, emb_blob in rows:
+            for rid, importance, emb_blob, existing_theta, existing_phi in rows:
                 gap = self._importance_to_gap(importance)
                 depth = self._compute_depth(importance, gap)
 
@@ -1192,12 +1197,8 @@ class OnionDB:
                     emb = self._decode_embedding(emb_blob)
                     theta, phi = self._embed_to_angles(emb)
                 else:
-                    # Keep existing angles
-                    row = self.conn.execute(
-                        "SELECT theta, phi FROM records WHERE id = ?",
-                        (rid,)
-                    ).fetchone()
-                    theta, phi = row[0], row[1]
+                    # Keep existing angles from the initial query
+                    theta, phi = existing_theta, existing_phi
 
                 cell_t, cell_p = self._angle_to_cell(theta, phi)
 
