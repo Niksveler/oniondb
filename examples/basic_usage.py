@@ -4,6 +4,7 @@ OnionDB — Basic Usage Example
 Demonstrates core operations: insert, query, fit, calibrate boundaries.
 Uses random embeddings (replace with real embeddings from your model).
 """
+import os
 import random
 from oniondb import OnionDB
 
@@ -11,6 +12,8 @@ from oniondb import OnionDB
 # 1. CREATE & INSERT
 # ═══════════════════════════════════════
 
+if os.path.exists("example.db"):
+    os.remove("example.db")
 db = OnionDB("example.db")
 
 # Simulate embeddings (use real ones from sentence-transformers, OpenAI, etc.)
@@ -40,7 +43,7 @@ print(f"\nTotal records: {db.count()}")
 # 2. QUERY OPERATIONS
 # ═══════════════════════════════════════
 
-# Shell scan: everything at importance level 0 (core)
+# Shell scan: everything in gap 0 (highest importance, >= 0.95)
 print("\n--- Shell Scan (gap=0, core records) ---")
 core = db.shell_scan(gap=0)
 for r in core:
@@ -54,7 +57,7 @@ for gap_id, results in profile.items():
     if results:
         print(f"  Gap {gap_id}: {len(results)} records")
         for r in results[:2]:
-            print(f"    [{r['id']}] sim={r.get('similarity', 0):.3f}")
+            print(f"    [{r['id']}] score={r.get('score', 0):.3f}")
 
 # Reverse ray: trace semantic gravity inward
 print("\n--- Reverse Ray ---")
@@ -99,7 +102,7 @@ for gap_id, info in stats["gaps"].items():
 
 db.close()
 
-# Clean up example file
-import os
 os.remove("example.db")
+if os.path.exists("pca_projection.json"):
+    os.remove("pca_projection.json")
 print("\nDone! (example.db cleaned up)")
