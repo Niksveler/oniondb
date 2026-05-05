@@ -287,7 +287,7 @@ OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries
 | 10K     |  ~28         | instant         | ✅ smooth            |
 | 100K    |  ~280        | fast            | ✅ solid             |
 | 500K    |  ~1,400      | noticeable      | ⚠️ still usable      |
-| 1M+     |  ~2,800+     | slowing down    | ❎ consider alternatives |
+| 1M+     |  ~2,800+     | slowing down    | ❌ consider alternatives |
 
 ### What limits scaling
 
