@@ -3,9 +3,12 @@ OnionDB Quickstart — 20-line working example.
 
 Run: python examples/quickstart.py
 """
+import os
 from oniondb import OnionDB
 
 # Create a database (creates SQLite file)
+if os.path.exists("quickstart.db"):
+    os.remove("quickstart.db")
 db = OnionDB("quickstart.db")
 
 # Insert with importance — determines which shell
@@ -20,7 +23,7 @@ print(f"Total: {db.count()} items")
 print(f"Core (gap 0): {db.count(gap=0)} items")
 print()
 
-# Shell scan — see everything at one importance level
+# Shell scan — see everything in one gap (importance band)
 core = db.shell_scan(gap=0)
 print("=== Core memories (gap 0) ===")
 for m in core:
@@ -47,8 +50,6 @@ items = [
 db.batch_insert(items)
 print(f"After batch: {db.count()} items")
 
-# Cleanup
 db.close()
-import os
 os.remove("quickstart.db")
 print("\nDone! Database cleaned up.")
