@@ -1,6 +1,6 @@
 # 🧅 OnionDB
 
-**A geometric memory database. Zero dependencies. Importance-stratified.**
+**A geometric database. Zero dependencies. Importance-stratified.**
 
 Your data has a *location*, not just a vector.
 
@@ -43,14 +43,14 @@ pip install oniondb
 from oniondb import OnionDB
 
 # Create a database (SQLite file, zero config)
-db = OnionDB("my_memories.db")
+db = OnionDB("my_data.db")
 
 # Insert with importance (determines which shell)
 db.insert("idea-1", "The Earth orbits the Sun", importance=0.9)
 db.insert("idea-2", "I had coffee this morning", importance=0.3)
 db.insert("idea-3", "E=mc2 defines mass-energy equivalence", importance=0.99)
 
-# Shell scan -- everything at importance level 0 (core memories)
+# Shell scan -- everything at importance level 0 (core records)
 core = db.shell_scan(gap=0)
 
 # GRF -- drill through ALL shells at a direction
@@ -63,7 +63,7 @@ print(f"Path curvature: {trace['curvature']} degrees")  # 0=straight, high=fragm
 
 # Count, get, delete
 print(db.count())        # 3
-print(db.get("idea-1"))  # full memory dict
+print(db.get("idea-1"))  # full record dict
 db.delete("idea-2")      # True
 ```
 
@@ -87,7 +87,7 @@ The GRF is what makes OnionDB unique. It "drills a core sample" through every im
 ```python
 # With embeddings: semantic direction from the embedding
 profile = db.grf(theta=0, phi=0, query_embedding=embedding, k_per_gap=5)
-# Returns: {0: [core memories], 1: [important], 2: [mid], 3: [low], 4: [trivial]}
+# Returns: {0: [core records], 1: [important], 2: [mid], 3: [low], 4: [trivial]}
 
 # The reverse ray follows semantic gravity inward, bending as it goes
 trace = db.reverse_ray(start_embedding=embedding)

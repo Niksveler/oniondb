@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oniondb"
-version = "0.1.0"
-description = "A geometric memory database with importance-stratified shells and zero dependencies."
+version = "0.2.0"
+description = "A geometric database with importance-stratified shells and zero dependencies."
 readme = "README.md"
 authors = [{name = "Nick Sveler"}]
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 keywords = [
-    "database", "geometric", "memory", "vector", "embeddings",
+    "database", "geometric", "vector", "embeddings",
     "importance", "hierarchical", "sqlite", "shell", "retrieval"
 ]
 classifiers = [

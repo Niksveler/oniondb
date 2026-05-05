@@ -28,7 +28,7 @@ def populated_db(db):
         emb = [random.gauss(0, 1) for _ in range(32)]
         db.insert(
             id=f"mem-{i:03d}",
-            content=f"Test memory number {i} about topic {i % 5}",
+            content=f"Test record number {i} about topic {i % 5}",
             importance=round(imp, 3),
             category=["personal", "technical", "decision", "observation"][i % 4],
             embedding=emb,
@@ -155,17 +155,17 @@ class TestGRF:
         assert isinstance(result, dict)
         # Should have at least one gap with results
         assert len(result) > 0
-        for gap_id, memories in result.items():
+        for gap_id, records in result.items():
             assert isinstance(gap_id, int)
-            assert isinstance(memories, list)
-            assert len(memories) <= 3
+            assert isinstance(records, list)
+            assert len(records) <= 3
 
     def test_grf_with_embedding(self, populated_db):
         emb = [random.gauss(0, 1) for _ in range(32)]
         result = populated_db.grf(theta=0, phi=0, k_per_gap=5,
                                    query_embedding=emb)
-        for gap_id, memories in result.items():
-            scores = [m["score"] for m in memories]
+        for gap_id, records in result.items():
+            scores = [m["score"] for m in records]
             assert scores == sorted(scores, reverse=True)
 
     def test_grf_alias_ray(self, populated_db):
@@ -178,7 +178,7 @@ class TestReverseRay:
         result = populated_db.reverse_ray(start_embedding=emb)
         assert "path" in result
         assert "curvature" in result
-        assert "memories" in result
+        assert "records" in result
         assert "straight" in result
         assert isinstance(result["straight"], bool)
 
@@ -277,9 +277,9 @@ class TestTemporalGRF:
         result = populated_db.temporal_grf(theta=0, phi=0, k_per_gap=3)
         assert isinstance(result, dict)
         # temporal_gap column is NULL by default, so result may be empty
-        for tgap, memories in result.items():
+        for tgap, records in result.items():
             assert isinstance(tgap, int)
-            assert isinstance(memories, list)
+            assert isinstance(records, list)
 
     def test_temporal_grf_with_data(self, db):
         """Insert with temporal_gap set manually via SQL, then query."""
@@ -288,8 +288,8 @@ class TestTemporalGRF:
                       importance=0.5 + i * 0.04,
                       theta=10.0, phi=5.0)
         # Set temporal_gap directly (normally done by ingestion pipeline)
-        db.conn.execute("UPDATE memories SET temporal_gap = 0 WHERE id IN ('t-0','t-1')")
-        db.conn.execute("UPDATE memories SET temporal_gap = 2 WHERE id IN ('t-5','t-6')")
+        db.conn.execute("UPDATE records SET temporal_gap = 0 WHERE id IN ('t-0','t-1')")
+        db.conn.execute("UPDATE records SET temporal_gap = 2 WHERE id IN ('t-5','t-6')")
         db.conn.commit()
         result = db.temporal_grf(theta=10.0, phi=5.0, k_per_gap=5)
         assert isinstance(result, dict)
@@ -303,7 +303,7 @@ class TestTemporalGRF:
         for i in range(5):
             db.insert(f"te-{i}", f"Embedded temporal {i}",
                       importance=0.6, embedding=emb, theta=0, phi=0)
-        db.conn.execute("UPDATE memories SET temporal_gap = 1")
+        db.conn.execute("UPDATE records SET temporal_gap = 1")
         db.conn.commit()
         result = db.temporal_grf(theta=0, phi=0, k_per_gap=3,
                                   query_embedding=emb)
@@ -384,6 +384,6 @@ class TestLifecycle:
     def test_repr(self, populated_db):
         r = repr(populated_db)
         assert "OnionDB" in r
-        assert "50 memories" in r
+        assert "50 records" in r
         assert "5 gaps" in r
 

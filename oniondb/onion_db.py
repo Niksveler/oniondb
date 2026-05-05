@@ -1,5 +1,5 @@
 """
-OnionDB — A geometric memory database.
+OnionDB — A geometric database.
 
 Data lives BETWEEN concentric shells (like air between balloons).
 Every data point has a 4-part address: (gap, θ, φ, depth).
@@ -25,7 +25,8 @@ class OnionDB:
 
     Data lives BETWEEN shells (like air between balloons).
     Every data point has a 4-part address: (gap, θ, φ, d).
-    Four native query operations: horizontal, ray, shell_scan, range_scan.
+    Six native query operations: horizontal, GRF, reverse_ray,
+    temporal_grf, shell_scan, range_scan.
     """
 
     # ─── Default shell boundaries (importance thresholds) ───
@@ -57,6 +58,14 @@ class OnionDB:
 
     def _create_schema(self):
         """Create tables if they don't exist."""
+        # Backward compat: migrate 'memories' table to 'records'
+        existing_tables = {row[0] for row in self.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        if 'memories' in existing_tables and 'records' not in existing_tables:
+            self.conn.execute("ALTER TABLE memories RENAME TO records")
+            self.conn.commit()
+
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS shells (
                 shell_id    INTEGER PRIMARY KEY,
@@ -64,7 +73,7 @@ class OnionDB:
                 created_at  TEXT DEFAULT (datetime('now'))
             );
 
-            CREATE TABLE IF NOT EXISTS memories (
+            CREATE TABLE IF NOT EXISTS records (
                 id          TEXT PRIMARY KEY,
                 content     TEXT NOT NULL,
                 gap         INTEGER NOT NULL,
@@ -83,9 +92,9 @@ class OnionDB:
                 created_at  TEXT DEFAULT (datetime('now'))
             );
 
-            CREATE INDEX IF NOT EXISTS idx_gap ON memories(gap);
-            CREATE INDEX IF NOT EXISTS idx_cell ON memories(gap, cell_theta, cell_phi);
-            CREATE INDEX IF NOT EXISTS idx_gap_range ON memories(gap, importance);
+            CREATE INDEX IF NOT EXISTS idx_gap ON records(gap);
+            CREATE INDEX IF NOT EXISTS idx_cell ON records(gap, cell_theta, cell_phi);
+            CREATE INDEX IF NOT EXISTS idx_gap_range ON records(gap, importance);
         """)
         # Insert shell boundaries if empty
         existing = self.conn.execute("SELECT COUNT(*) FROM shells").fetchone()[0]
@@ -252,7 +261,7 @@ class OnionDB:
 
         with self._lock:
             self.conn.execute("""
-                INSERT OR REPLACE INTO memories
+                INSERT OR REPLACE INTO records
                 (id, content, gap, theta, phi, depth, cell_theta, cell_phi,
                  importance, category, embedding, metadata)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -270,7 +279,7 @@ class OnionDB:
     # ═══════════════════════════════════════════
 
     # Standard column list for all queries
-    _SELECT_COLS = """id, content, gap, theta, phi, depth, importance, category,
+    _RECORD_COLS = """id, content, gap, theta, phi, depth, importance, category,
                       embedding, cell_theta, cell_phi, subshell, temporal_gap,
                       origin_date"""
 
@@ -293,7 +302,7 @@ class OnionDB:
                             amount instead of hard filtering. E.g. 0.1 adds
                             10% to matching items' scores. (Fix #3: soft filter)
 
-        Returns: List of memory dicts, sorted by relevance.
+        Returns: List of record dicts, sorted by relevance.
         """
         ct, cp = self._angle_to_cell(theta, phi)
 
@@ -318,8 +327,8 @@ class OnionDB:
             params.append(subshell)
 
         sql = f"""
-            SELECT {self._SELECT_COLS}
-            FROM memories
+            SELECT {self._RECORD_COLS}
+            FROM records
             WHERE gap = ?
             AND (cell_theta, cell_phi) IN ({placeholders})
             {subshell_clause}
@@ -381,18 +390,18 @@ class OnionDB:
             subshell_boost: Score multiplier for matching subshell items.
                             0.0 = hard filter, >0.0 = soft boost.
 
-        Returns: Dict mapping gap_id → list of memories.
+        Returns: Dict mapping gap_id → list of records.
         """
         result = {}
         for gap_id in range(self.n_gaps):
-            memories = self.horizontal(gap_id, theta, phi,
-                                        k=k_per_gap,
-                                        neighbor_radius=neighbor_radius,
-                                        query_embedding=query_embedding,
-                                        subshell=subshell,
-                                        subshell_boost=subshell_boost)
-            if memories:
-                result[gap_id] = memories
+            items = self.horizontal(gap_id, theta, phi,
+                                    k=k_per_gap,
+                                    neighbor_radius=neighbor_radius,
+                                    query_embedding=query_embedding,
+                                    subshell=subshell,
+                                    subshell_boost=subshell_boost)
+            if items:
+                result[gap_id] = items
         return result
 
     # Backward-compatible alias
@@ -429,9 +438,9 @@ class OnionDB:
             neighbor_radius: Cell search radius at each hop
 
         Returns: dict with:
-            - path: list of {gap, theta, phi, memory, score} at each hop
+            - path: list of {gap, theta, phi, record, score} at each hop
             - curvature: total angular deviation (0=straight, high=curved)
-            - memories: list of memories found along the path
+            - records: list of records found along the path
             - path_vector: list of (theta, phi) coordinates tracing the ray
         """
         # Determine starting position
@@ -466,7 +475,7 @@ class OnionDB:
             if not candidates:
                 path.append({
                     "gap": gap_id, "theta": current_theta,
-                    "phi": current_phi, "memory": None, "score": 0.0
+                    "phi": current_phi, "record": None, "score": 0.0
                 })
                 continue
 
@@ -482,7 +491,7 @@ class OnionDB:
                 "gap": gap_id,
                 "theta": best["theta"],
                 "phi": best["phi"],
-                "memory": best,
+                "record": best,
                 "score": best.get("score", 0.0),
                 "bend": round(bend, 2)
             })
@@ -494,7 +503,7 @@ class OnionDB:
                 current_emb = best["_emb"]
 
         # Build results
-        memories = [p["memory"] for p in path if p["memory"]]
+        records = [p["record"] for p in path if p["record"]]
         path_vector = [(p["theta"], p["phi"]) for p in path]
         n_hops = max(len(path) - 1, 1)
         avg_curvature = total_curvature / n_hops
@@ -503,7 +512,7 @@ class OnionDB:
             "path": path,
             "curvature": round(total_curvature, 2),
             "avg_curvature": round(avg_curvature, 2),
-            "memories": memories,
+            "records": records,
             "path_vector": path_vector,
             "straight": avg_curvature < 15.0,  # threshold for "straight"
             "n_hops": len(path)
@@ -514,8 +523,8 @@ class OnionDB:
         """Find the single best cosine match in an entire gap."""
         # Scan wider to find best starting point
         rows = self.conn.execute(f"""
-            SELECT {self._SELECT_COLS}
-            FROM memories WHERE gap = ?
+            SELECT {self._RECORD_COLS}
+            FROM records WHERE gap = ?
         """, (gap,)).fetchall()
 
         results = self._rows_to_dicts(rows)
@@ -542,11 +551,11 @@ class OnionDB:
             gap: Which gap to scan (0=innermost/core)
             limit: Maximum results
 
-        Returns: List of memory dicts.
+        Returns: List of record dicts.
         """
         rows = self.conn.execute(f"""
-            SELECT {self._SELECT_COLS}
-            FROM memories
+            SELECT {self._RECORD_COLS}
+            FROM records
             WHERE gap = ?
             ORDER BY importance DESC
             LIMIT ?
@@ -566,7 +575,7 @@ class OnionDB:
         """
         Temporal GRF — drill through TIME shells at direction (θ, φ).
 
-        Like the importance GRF but organized by when memories were created.
+        Like the importance GRF but organized by when records were created.
         Shows how a topic evolved over time at different importance levels.
 
         Temporal gaps:
@@ -576,7 +585,7 @@ class OnionDB:
         Args:
             Same as grf(), but drills through temporal_gap instead of gap.
 
-        Returns: Dict mapping temporal_gap_id → list of memories.
+        Returns: Dict mapping temporal_gap_id → list of records.
         """
         ct, cp = self._angle_to_cell(theta, phi)
 
@@ -601,29 +610,29 @@ class OnionDB:
                 params.append(subshell)
 
             sql = f"""
-                SELECT {self._SELECT_COLS}
-                FROM memories
+                SELECT {self._RECORD_COLS}
+                FROM records
                 WHERE temporal_gap = ?
                 AND (cell_theta, cell_phi) IN ({placeholders})
                 {subshell_clause}
             """
             rows = self.conn.execute(sql, params).fetchall()
-            memories = self._rows_to_dicts(rows)
+            items = self._rows_to_dicts(rows)
 
-            if query_embedding and memories:
-                for m in memories:
+            if query_embedding and items:
+                for m in items:
                     m["score"] = self._cosine(query_embedding, m.get("_emb"))
-                memories.sort(key=lambda x: -x.get("score", 0))
-                memories = memories[:k_per_gap]
-            elif memories:
-                for m in memories:
+                items.sort(key=lambda x: -x.get("score", 0))
+                items = items[:k_per_gap]
+            elif items:
+                for m in items:
                     m["score"] = -self._angular_dist(
                         theta, phi, m["theta"], m["phi"])
-                memories.sort(key=lambda x: -x["score"])
-                memories = memories[:k_per_gap]
+                items.sort(key=lambda x: -x["score"])
+                items = items[:k_per_gap]
 
-            if memories:
-                result[tgap] = memories
+            if items:
+                result[tgap] = items
         return result
 
     # ═══════════════════════════════════════════
@@ -646,8 +655,8 @@ class OnionDB:
         Returns: List of memory dicts.
         """
         rows = self.conn.execute(f"""
-            SELECT {self._SELECT_COLS}
-            FROM memories
+            SELECT {self._RECORD_COLS}
+            FROM records
             WHERE gap >= ? AND gap <= ?
             ORDER BY gap ASC, importance DESC
             LIMIT ?
@@ -661,11 +670,11 @@ class OnionDB:
 
     def stats(self) -> dict:
         """Return database statistics."""
-        total = self.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        total = self.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
         gaps = {}
         for row in self.conn.execute(
             "SELECT gap, COUNT(*), AVG(importance), MIN(importance), MAX(importance) "
-            "FROM memories GROUP BY gap ORDER BY gap"
+            "FROM records GROUP BY gap ORDER BY gap"
         ).fetchall():
             gaps[row[0]] = {
                 "count": row[1], "avg_importance": round(row[2], 3),
@@ -675,7 +684,7 @@ class OnionDB:
 
         categories = {}
         for row in self.conn.execute(
-            "SELECT category, COUNT(*) FROM memories GROUP BY category ORDER BY COUNT(*) DESC"
+            "SELECT category, COUNT(*) FROM records GROUP BY category ORDER BY COUNT(*) DESC"
         ).fetchall():
             categories[row[0]] = row[1]
 
@@ -687,10 +696,10 @@ class OnionDB:
         }
 
     def cell_density(self, gap: int) -> list:
-        """Show how many memories are in each cell of a gap."""
+        """Show how many records are in each cell of a gap."""
         rows = self.conn.execute("""
             SELECT cell_theta, cell_phi, COUNT(*)
-            FROM memories WHERE gap = ?
+            FROM records WHERE gap = ?
             GROUP BY cell_theta, cell_phi
             ORDER BY COUNT(*) DESC
         """, (gap,)).fetchall()
@@ -701,7 +710,7 @@ class OnionDB:
     # ═══════════════════════════════════════════
 
     def _rows_to_dicts(self, rows: list) -> list:
-        """Convert query rows to memory dicts. Expects 14-column rows."""
+        """Convert query rows to record dicts. Expects 14-column rows."""
         results = []
         for r in rows:
             mid, content, gap, theta, phi, depth, imp, cat, emb, ct, cp, \
@@ -757,16 +766,16 @@ class OnionDB:
 
     def get(self, id: str) -> Optional[dict]:
         """
-        Get a single memory by ID.
+        Get a single record by ID.
 
         Args:
-            id: The memory ID.
+            id: The record ID.
 
-        Returns: Memory dict or None if not found.
+        Returns: Record dict or None if not found.
         """
         row = self.conn.execute(f"""
-            SELECT {self._SELECT_COLS}
-            FROM memories WHERE id = ?
+            SELECT {self._RECORD_COLS}
+            FROM records WHERE id = ?
         """, (id,)).fetchone()
         if row is None:
             return None
@@ -775,32 +784,32 @@ class OnionDB:
 
     def delete(self, id: str) -> bool:
         """
-        Delete a memory by ID.
+        Delete a record by ID.
 
         Args:
-            id: The memory ID to delete.
+            id: The record ID to delete.
 
         Returns: True if a row was deleted, False if ID not found.
         """
         with self._lock:
-            cursor = self.conn.execute("DELETE FROM memories WHERE id = ?", (id,))
+            cursor = self.conn.execute("DELETE FROM records WHERE id = ?", (id,))
             self.conn.commit()
         return cursor.rowcount > 0
 
     def count(self, gap: int = None) -> int:
         """
-        Count memories, optionally filtered by gap.
+        Count records, optionally filtered by gap.
 
         Args:
-            gap: If provided, count only memories in this gap.
+            gap: If provided, count only records in this gap.
 
-        Returns: Number of memories.
+        Returns: Number of records.
         """
         if gap is not None:
             return self.conn.execute(
-                "SELECT COUNT(*) FROM memories WHERE gap = ?", (gap,)
+                "SELECT COUNT(*) FROM records WHERE gap = ?", (gap,)
             ).fetchone()[0]
-        return self.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        return self.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
 
     def batch_insert(self, items: list) -> list:
         """
@@ -855,7 +864,7 @@ class OnionDB:
         """
         # Collect all embeddings
         rows = self.conn.execute(
-            "SELECT embedding FROM memories WHERE embedding IS NOT NULL"
+            "SELECT embedding FROM records WHERE embedding IS NOT NULL"
         ).fetchall()
         if len(rows) < 10:
             return {"error": "Need at least 10 embeddings to fit PCA",
@@ -976,5 +985,5 @@ class OnionDB:
         self.close()
 
     def __repr__(self):
-        total = self.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        return f"OnionDB('{self.db_path}', {total} memories, {self.n_gaps} gaps)"
+        total = self.conn.execute("SELECT COUNT(*) FROM records").fetchone()[0]
+        return f"OnionDB('{self.db_path}', {total} records, {self.n_gaps} gaps)"
