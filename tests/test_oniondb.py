@@ -1276,3 +1276,235 @@ class TestSchemaMigration:
         assert mem["content"] == "Old record"
         assert db.count() == 1
         db.close()
+
+
+# ═══════════════════════════════════════
+# SIMHASH — High-Dimensional Hashing
+# ═══════════════════════════════════════
+
+class TestSimHash:
+    """Tests for 64-bit SimHash locality-sensitive hashing."""
+
+    def test_fit_simhash_basic(self, populated_db):
+        """fit_simhash stores planes and hashes all records."""
+        result = populated_db.fit_simhash(n_bits=64, seed=42)
+        assert result["n_bits"] == 64
+        assert result["n_computed"] > 0
+        assert result["dim"] == 32  # populated_db uses dim=32
+
+        # All records with embeddings should have simhash
+        total = populated_db.conn.execute(
+            "SELECT COUNT(*) FROM records WHERE embedding IS NOT NULL"
+        ).fetchone()[0]
+        hashed = populated_db.conn.execute(
+            "SELECT COUNT(*) FROM records WHERE simhash IS NOT NULL"
+        ).fetchone()[0]
+        assert hashed == total
+
+        # Planes should be stored in config
+        row = populated_db.conn.execute(
+            "SELECT value FROM config WHERE key = 'simhash_hyperplanes'"
+        ).fetchone()
+        assert row is not None
+
+    def test_simhash_deterministic(self, populated_db):
+        """Same seed produces identical hashes."""
+        populated_db.fit_simhash(n_bits=64, seed=123)
+        hashes_1 = dict(populated_db.conn.execute(
+            "SELECT id, simhash FROM records WHERE simhash IS NOT NULL"
+        ).fetchall())
+
+        # Refit with same seed
+        populated_db.fit_simhash(n_bits=64, seed=123)
+        hashes_2 = dict(populated_db.conn.execute(
+            "SELECT id, simhash FROM records WHERE simhash IS NOT NULL"
+        ).fetchall())
+
+        assert hashes_1 == hashes_2
+
+    def test_simhash_different_seeds_differ(self, populated_db):
+        """Different seeds produce different hashes."""
+        populated_db.fit_simhash(n_bits=64, seed=1)
+        hashes_1 = dict(populated_db.conn.execute(
+            "SELECT id, simhash FROM records WHERE simhash IS NOT NULL"
+        ).fetchall())
+
+        populated_db.fit_simhash(n_bits=64, seed=999)
+        hashes_2 = dict(populated_db.conn.execute(
+            "SELECT id, simhash FROM records WHERE simhash IS NOT NULL"
+        ).fetchall())
+
+        # At least some should differ
+        diffs = sum(1 for k in hashes_1 if hashes_1[k] != hashes_2.get(k))
+        assert diffs > 0
+
+    def test_simhash_query_returns_results(self, populated_db):
+        """simhash_query returns records with hamming and score fields."""
+        populated_db.fit_simhash(n_bits=64, seed=42)
+
+        # Query with the first record's embedding
+        first = populated_db.conn.execute(
+            "SELECT embedding FROM records WHERE embedding IS NOT NULL LIMIT 1"
+        ).fetchone()
+        query_emb = populated_db._decode_embedding(first[0])
+
+        results = populated_db.simhash_query(query_emb, max_hamming=20, k=5)
+        assert len(results) > 0
+        assert len(results) <= 5
+        assert "hamming" in results[0]
+        assert "score" in results[0]
+        assert all(r["hamming"] <= 20 for r in results)
+
+        # Results should be sorted by score descending
+        scores = [r["score"] for r in results]
+        assert scores == sorted(scores, reverse=True)
+
+    def test_simhash_query_not_fitted(self, populated_db):
+        """simhash_query raises ValueError when planes aren't fitted."""
+        query_emb = _emb(32, seed=0)
+        with pytest.raises(ValueError, match="not fitted"):
+            populated_db.simhash_query(query_emb, max_hamming=10)
+
+    def test_hamming_distance(self, db):
+        """_hamming computes correct bit distances for known patterns."""
+        # Identical → 0
+        assert db._hamming(0, 0) == 0
+        assert db._hamming(42, 42) == 0
+
+        # One bit difference
+        assert db._hamming(0, 1) == 1
+        assert db._hamming(0, 2) == 1
+        assert db._hamming(0, 4) == 1
+
+        # All 64 bits different
+        assert db._hamming(0, -1) == 64  # -1 is all 1s in signed
+
+        # Known patterns
+        assert db._hamming(0b1010, 0b0101) == 4
+        assert db._hamming(0xFF, 0x00) == 8
+
+        # Signed 64-bit edge cases
+        max_signed = (1 << 63) - 1   # 0x7FFFFFFFFFFFFFFF
+        min_signed = -(1 << 63)      # 0x8000000000000000
+        # XOR = 0xFFFFFFFFFFFFFFFF → all 64 bits differ
+        assert db._hamming(max_signed, min_signed) == 64
+
+    def test_insert_auto_hashes(self, populated_db):
+        """New inserts get simhash automatically after fit."""
+        populated_db.fit_simhash(n_bits=64, seed=42)
+
+        # Insert a new record
+        emb = _emb(32, seed=99)
+        populated_db.insert("auto-hash-test", "Auto hash test", importance=0.5,
+                            embedding=emb)
+
+        row = populated_db.conn.execute(
+            "SELECT simhash FROM records WHERE id = 'auto-hash-test'"
+        ).fetchone()
+        assert row is not None
+        assert row[0] is not None  # should have a hash
+
+    def test_simhash_persists_across_reopen(self, tmp_path):
+        """Planes and hashes survive DB close and reopen."""
+        db_path = str(tmp_path / "persist.db")
+
+        # Create, populate, fit
+        db1 = OnionDB(db_path)
+        random.seed(42)
+        for i in range(20):
+            db1.insert(f"p-{i}", f"Persist test {i}", importance=0.5,
+                       embedding=_emb(32, seed=i))
+        db1.fit_simhash(n_bits=64, seed=42)
+
+        # Capture hashes
+        hashes_before = dict(db1.conn.execute(
+            "SELECT id, simhash FROM records WHERE simhash IS NOT NULL"
+        ).fetchall())
+        db1.close()
+
+        # Reopen
+        db2 = OnionDB(db_path)
+        assert db2._simhash_planes is not None  # planes loaded
+
+        hashes_after = dict(db2.conn.execute(
+            "SELECT id, simhash FROM records WHERE simhash IS NOT NULL"
+        ).fetchall())
+        assert hashes_before == hashes_after
+
+        # New insert should also get hash (planes loaded from config)
+        db2.insert("p-new", "New after reopen", importance=0.5,
+                   embedding=_emb(32, seed=100))
+        new_hash = db2.conn.execute(
+            "SELECT simhash FROM records WHERE id = 'p-new'"
+        ).fetchone()
+        assert new_hash[0] is not None
+        db2.close()
+
+    def test_fit_simhash_no_embeddings(self, db):
+        """fit_simhash on DB with no embeddings returns error."""
+        db.insert("no-emb", "No embedding", importance=0.5)
+        result = db.fit_simhash(n_bits=64, seed=42)
+        assert result.get("error") or result.get("n_computed", 0) == 0
+
+    def test_simhash_query_gap_filter(self, populated_db):
+        """simhash_query respects gap filter."""
+        populated_db.fit_simhash(n_bits=64, seed=42)
+
+        first = populated_db.conn.execute(
+            "SELECT embedding, gap FROM records "
+            "WHERE embedding IS NOT NULL LIMIT 1"
+        ).fetchone()
+        query_emb = populated_db._decode_embedding(first[0])
+        seed_gap = first[1]
+
+        results = populated_db.simhash_query(
+            query_emb, max_hamming=32, gap=seed_gap, k=50
+        )
+        # All results should be from the requested gap
+        for r in results:
+            assert r["gap"] == seed_gap
+
+    def test_hamming_cosine_correlation(self, tmp_path):
+        """Lower hamming distance correlates with higher cosine similarity."""
+        db_path = str(tmp_path / "corr.db")
+        db = OnionDB(db_path)
+
+        # Create a cluster of similar embeddings
+        random.seed(42)
+        base = _emb(32, seed=0)
+        for i in range(30):
+            # Small perturbation → similar embedding
+            emb = [v + random.gauss(0, 0.1) for v in base]
+            db.insert(f"close-{i}", f"Close {i}", importance=0.5,
+                      embedding=emb)
+        # Create distant embeddings
+        for i in range(30):
+            emb = _emb(32, seed=1000 + i)
+            db.insert(f"far-{i}", f"Far {i}", importance=0.5,
+                      embedding=emb)
+
+        db.fit_simhash(n_bits=64, seed=42)
+        query_hash = db.conn.execute(
+            "SELECT simhash FROM records WHERE id = 'close-0'"
+        ).fetchone()[0]
+
+        # Close records should have lower hamming than far records
+        close_hams = []
+        far_hams = []
+        for rid_prefix, target in [("close-", close_hams), ("far-", far_hams)]:
+            rows = db.conn.execute(
+                "SELECT simhash FROM records WHERE id LIKE ? AND id != 'close-0'",
+                (rid_prefix + "%",)
+            ).fetchall()
+            for (sh,) in rows:
+                target.append(db._hamming(query_hash, sh))
+
+        avg_close = sum(close_hams) / len(close_hams)
+        avg_far = sum(far_hams) / len(far_hams)
+
+        # Similar embeddings should have lower average hamming
+        assert avg_close < avg_far, (
+            f"Close avg hamming ({avg_close:.1f}) should be less than "
+            f"far avg hamming ({avg_far:.1f})"
+        )
+        db.close()

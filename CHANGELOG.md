@@ -2,6 +2,20 @@
 
 All notable changes to OnionDB will be documented in this file.
 
+## [0.5.0] — 2026-05-07
+
+### Added
+- **SimHash — 64-bit locality-sensitive hashing** for high-dimensional search beyond the 2D cell grid.
+  - `fit_simhash(n_bits=64, seed=42)` — generate random hyperplanes and compute hashes for all records. Numpy-accelerated batch computation with pure-Python fallback.
+  - `simhash_query(embedding, max_hamming, gap, k)` — search by Hamming distance pre-filter + cosine ranking. Finds cross-cell neighbors that PCA projection misses.
+  - Auto-hash on `insert()` — new records are automatically hashed when planes are fitted.
+  - `simhash` column added to `records` table with automatic schema migration.
+  - Hyperplanes stored in SQLite `config` table for database portability.
+- **`_hamming(a, b)`** — 64-bit masked Hamming distance computation.
+
+### Fixed
+- **`_hamming` infinite loop** on signed 64-bit integers — XOR of two negative Python ints produces infinite-precision values. Fixed with 64-bit mask (`& 0xFFFFFFFFFFFFFFFF`).
+
 ## [0.4.0] — 2026-05-07
 
 ### Added

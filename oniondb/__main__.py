@@ -106,6 +106,15 @@ def cmd_info(args):
     except ImportError:
         print(f"  Numpy:      no — using pure Python fallback")
 
+    # SimHash status
+    if db._simhash_planes:
+        n_hashed = db.conn.execute(
+            "SELECT COUNT(*) FROM records WHERE simhash IS NOT NULL"
+        ).fetchone()[0]
+        print(f"  SimHash:    yes ({db._simhash_bits}-bit, {n_hashed} records hashed)")
+    else:
+        print(f"  SimHash:    not fitted")
+
     db.close()
 
 

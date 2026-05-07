@@ -18,6 +18,7 @@ import struct
 import json
 import os
 import threading
+import random
 from typing import Optional
 from datetime import datetime as _dt, timezone as _tz
 
@@ -78,6 +79,7 @@ class OnionDB:
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._create_schema()
         self._load_pca()
+        self._load_simhash()
 
     def _create_schema(self):
         """Create tables if they don't exist."""
@@ -88,6 +90,15 @@ class OnionDB:
         if 'memories' in existing_tables and 'records' not in existing_tables:
             self.conn.execute("ALTER TABLE memories RENAME TO records")
             self.conn.commit()
+        # Add simhash column if missing (v0.5.0 migration)
+        try:
+            self.conn.execute("SELECT simhash FROM records LIMIT 1")
+        except Exception:
+            try:
+                self.conn.execute("ALTER TABLE records ADD COLUMN simhash INTEGER")
+                self.conn.commit()
+            except Exception:
+                pass
 
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS shells (
@@ -112,6 +123,7 @@ class OnionDB:
                 subshell    INTEGER,
                 temporal_gap INTEGER,
                 origin_date TEXT,
+                simhash     INTEGER,
                 created_at  TEXT DEFAULT (datetime('now'))
             );
 
@@ -220,6 +232,67 @@ class OnionDB:
             except Exception:
                 self._pca = None
 
+    def _load_simhash(self):
+        """Load SimHash hyperplanes from DB config table."""
+        self._simhash_planes = None
+        self._simhash_planes_np = None  # cached numpy matrix
+        self._simhash_bits = 0
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM config WHERE key = 'simhash_hyperplanes'"
+            ).fetchone()
+            if row:
+                data = json.loads(row[0])
+                self._simhash_planes = data["planes"]
+                self._simhash_bits = data.get("n_bits", len(data["planes"]))
+                if _HAS_NUMPY:
+                    self._simhash_planes_np = np.asarray(
+                        data["planes"], dtype=np.float32
+                    )
+        except Exception:
+            pass
+
+    def _compute_simhash(self, embedding: list) -> Optional[int]:
+        """Compute SimHash from embedding using stored hyperplanes.
+
+        Uses numpy if available for ~50x faster computation.
+        Falls back to pure Python (zero dependencies).
+        """
+        if self._simhash_planes is None or not embedding:
+            return None
+        if _HAS_NUMPY and self._simhash_planes_np is not None:
+            # Matrix multiply: planes (n_bits × dim) @ embedding (dim,) → (n_bits,)
+            emb_arr = np.asarray(embedding, dtype=np.float32)
+            planes_arr = self._simhash_planes_np  # cached
+            # Handle dimension mismatch
+            d = min(planes_arr.shape[1], len(emb_arr))
+            dots = planes_arr[:, :d] @ emb_arr[:d]
+            bits = (dots > 0).astype(np.uint64)
+            # Pack bits into single integer
+            powers = np.uint64(1) << np.arange(len(bits), dtype=np.uint64)
+            h = int(np.sum(bits * powers))
+        else:
+            h = 0
+            dim = len(embedding)
+            for bit, plane in enumerate(self._simhash_planes):
+                pdim = len(plane)
+                d = min(dim, pdim)
+                dot = sum(embedding[i] * plane[i] for i in range(d))
+                if dot > 0:
+                    h |= (1 << bit)
+        # Convert to signed 64-bit for SQLite storage
+        if h >= (1 << 63):
+            h -= (1 << 64)
+        return h
+
+    @staticmethod
+    def _hamming(a: int, b: int) -> int:
+        """Count differing bits between two 64-bit integers (Hamming distance).
+
+        Masks to 64 bits to handle Python's signed int XOR correctly.
+        """
+        return bin((a ^ b) & 0xFFFFFFFFFFFFFFFF).count('1')
+
     def _embed_to_angles(self, embedding: list) -> tuple[float, float]:
         """
         Project embedding to (theta, phi) using PCA Linear projection.
@@ -326,15 +399,17 @@ class OnionDB:
             emb_blob = struct.pack(f'{len(embedding)}f', *embedding)
 
         _origin = origin_date or _dt.now(_tz.utc).isoformat()
+        sh = self._compute_simhash(embedding)
 
         with self._lock:
             self.conn.execute("""
                 INSERT OR REPLACE INTO records
                 (id, content, gap, theta, phi, depth, cell_theta, cell_phi,
-                 importance, category, embedding, metadata, origin_date)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 importance, category, embedding, metadata, origin_date,
+                 simhash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (id, content, gap, theta, phi, depth, cell_t, cell_p,
-                  importance, category, emb_blob, metadata, _origin))
+                  importance, category, emb_blob, metadata, _origin, sh))
             if _commit:
                 self.conn.commit()
 
@@ -1445,6 +1520,192 @@ class OnionDB:
             "pc1_range": pc1_range,
             "pc2_range": pc2_range,
         }
+
+    # ═══════════════════════════════════════════
+    # SIMHASH — high-dimensional locality hashing
+    # ═══════════════════════════════════════════
+
+    def fit_simhash(self, n_bits: int = 64, seed: int = 42) -> dict:
+        """
+        Generate random hyperplanes and compute SimHash for all records.
+
+        SimHash captures all N embedding dimensions using random
+        hyperplane projections. Unlike PCA (which projects to 2D),
+        each bit samples across ALL dimensions simultaneously.
+
+        Args:
+            n_bits: Number of hash bits (default 64). More bits =
+                    finer-grained similarity but larger storage.
+            seed: Random seed for reproducible hyperplanes.
+
+        Returns: dict with n_computed, n_skipped, n_bits.
+        """
+        # Determine embedding dimension from data
+        row = self.conn.execute(
+            "SELECT embedding FROM records WHERE embedding IS NOT NULL LIMIT 1"
+        ).fetchone()
+        if not row:
+            return {"n_computed": 0, "n_skipped": 0, "n_bits": n_bits,
+                    "error": "No records with embeddings found"}
+
+        sample_emb = self._decode_embedding(row[0])
+        dim = len(sample_emb)
+
+        # Generate random hyperplanes
+        rng = random.Random(seed)
+        planes = [[rng.gauss(0, 1) for _ in range(dim)]
+                  for _ in range(n_bits)]
+
+        # Store hyperplanes in config table
+        config_data = json.dumps({
+            "planes": planes,
+            "n_bits": n_bits,
+            "dim": dim,
+            "seed": seed,
+        })
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                ("simhash_hyperplanes", config_data)
+            )
+            self.conn.commit()
+
+        # Load into memory
+        self._simhash_planes = planes
+        self._simhash_bits = n_bits
+        if _HAS_NUMPY:
+            self._simhash_planes_np = np.asarray(planes, dtype=np.float32)
+
+        # Compute SimHash for all records with embeddings
+        rows = self.conn.execute(
+            "SELECT id, embedding FROM records WHERE embedding IS NOT NULL"
+        ).fetchall()
+
+        n_computed = 0
+        n_skipped = 0
+
+        if _HAS_NUMPY and rows:
+            # Batch: decode all embeddings into one matrix
+            ids = []
+            embs = []
+            for rid, emb_blob in rows:
+                emb = self._decode_embedding(emb_blob)
+                if emb:
+                    ids.append(rid)
+                    embs.append(emb)
+                else:
+                    n_skipped += 1
+
+            if embs:
+                # (N, dim) @ (dim, n_bits) → (N, n_bits) dot products
+                emb_matrix = np.asarray(embs, dtype=np.float32)
+                planes_arr = self._simhash_planes_np  # (n_bits, dim)
+                d = min(emb_matrix.shape[1], planes_arr.shape[1])
+                dots = emb_matrix[:, :d] @ planes_arr[:, :d].T  # (N, n_bits)
+                bit_signs = (dots > 0).astype(np.uint64)  # (N, n_bits)
+                powers = np.uint64(1) << np.arange(
+                    n_bits, dtype=np.uint64
+                )  # (n_bits,)
+                hashes = bit_signs @ powers  # (N,) unsigned
+
+                with self._lock:
+                    for i, rid in enumerate(ids):
+                        h = int(hashes[i])
+                        if h >= (1 << 63):
+                            h -= (1 << 64)
+                        self.conn.execute(
+                            "UPDATE records SET simhash = ? WHERE id = ?",
+                            (h, rid)
+                        )
+                        n_computed += 1
+                    self.conn.commit()
+        else:
+            # Pure Python fallback
+            with self._lock:
+                for rid, emb_blob in rows:
+                    emb = self._decode_embedding(emb_blob)
+                    if emb:
+                        sh = self._compute_simhash(emb)
+                        self.conn.execute(
+                            "UPDATE records SET simhash = ? WHERE id = ?",
+                            (sh, rid)
+                        )
+                        n_computed += 1
+                    else:
+                        n_skipped += 1
+                self.conn.commit()
+
+        return {"n_computed": n_computed, "n_skipped": n_skipped,
+                "n_bits": n_bits, "dim": dim}
+
+    def simhash_query(self, query_embedding: list,
+                      max_hamming: int = 10,
+                      gap: int = None,
+                      k: int = 10,
+                      category: str = None) -> list:
+        """
+        High-dimensional search using SimHash — bypasses the 2D cell grid.
+
+        Finds records whose SimHash is within max_hamming bits of the
+        query embedding's hash, then ranks by cosine similarity.
+
+        This captures high-dimensional relationships that the 2D PCA
+        cell projection may miss.
+
+        Args:
+            query_embedding: The embedding to search with.
+            max_hamming: Maximum Hamming distance (0-64). Lower = stricter.
+                         10 ≈ top 15% similarity. 15 ≈ top 25%.
+            gap: If provided, search only this gap. None = all gaps.
+            k: Max results to return.
+            category: If provided, filter by category.
+
+        Returns: List of record dicts sorted by cosine similarity.
+
+        Raises:
+            ValueError: If SimHash not fitted (call fit_simhash() first).
+        """
+        if self._simhash_planes is None:
+            raise ValueError(
+                "SimHash not fitted. Call fit_simhash() first."
+            )
+
+        query_hash = self._compute_simhash(query_embedding)
+        if query_hash is None:
+            return []
+
+        # Fetch candidates — gap-filtered or all
+        params = []
+        where_parts = ["simhash IS NOT NULL"]
+        if gap is not None:
+            where_parts.append("gap = ?")
+            params.append(gap)
+        if category is not None:
+            where_parts.append("category = ?")
+            params.append(category)
+
+        where_clause = " AND ".join(where_parts)
+        sql = f"SELECT {self._RECORD_COLS}, simhash FROM records WHERE {where_clause}"
+        rows = self.conn.execute(sql, params).fetchall()
+
+        # Filter by Hamming distance, then cosine rank
+        results = []
+        for row in rows:
+            # simhash is the 16th column (after the 15 _RECORD_COLS)
+            record_hash = row[-1]
+            record_data = row[:-1]  # first 15 columns
+            if record_hash is not None:
+                hdist = self._hamming(query_hash, record_hash)
+                if hdist <= max_hamming:
+                    d = self._rows_to_dicts([record_data])[0]
+                    d["hamming"] = hdist
+                    d["score"] = self._cosine(
+                        query_embedding, d.get("_emb")
+                    )
+                    results.append(d)
+
+        results.sort(key=lambda x: -x.get("score", 0))
+        return results[:k]
 
     # ═══════════════════════════════════════════
     # BOUNDARY CALIBRATION & REINDEX

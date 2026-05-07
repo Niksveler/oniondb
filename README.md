@@ -172,6 +172,7 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 | `grf(theta, phi, ...)`                  | **Geometric Ray Filter** — drill through all shells  |
 | `reverse_ray(start_embedding, ...)`     | Curved semantic trace from outer to inner            |
 | `temporal_grf(theta, phi, ...)`         | Drill through time-based shells                      |
+| `simhash_query(emb, max_hamming, ...)`  | **SimHash search** — high-dimensional LSH filtering  |
 | `shell_scan(gap, limit, offset)`        | Return everything at one importance level            |
 | `range_scan(gap_start, gap_end, limit)` | Return everything between two levels                 |
 
@@ -190,6 +191,7 @@ All query methods support `category=...` for filtering by record category.
 | Method                        | Description                                      |
 |-------------------------------|--------------------------------------------------|
 | `fit_projection(save=True)`   | Self-calibrate PCA from stored embeddings        |
+| `fit_simhash(n_bits=64, seed)`| Generate SimHash hyperplanes and hash all records|
 | `fit_boundaries(n_gaps=5)`    | Suggest quantile-based boundaries from data      |
 | `reindex(boundaries=None)`    | Recalculate all gap/depth/cell assignments       |
 | `assign_temporal_gaps()`      | Auto-bucket records into time shells             |
@@ -288,6 +290,34 @@ if trace["straight"]:
 else:
     print(f"Fragmented: {trace['curvature']}° total deviation over {trace['n_hops']} hops")
 ```
+
+### SimHash — locality-sensitive hashing for high-dimensional search
+
+OnionDB's cell grid projects embeddings onto a 2D sphere via PCA, which discards all but the top-2 variance axes. This works well at small scales, but semantically similar records can land in distant cells if their similarity lives in the other dimensions.
+
+**SimHash** provides an orthogonal search path that operates in the **full embedding space**:
+
+1. `fit_simhash(n_bits=64, seed=42)` generates random hyperplanes and computes a 64-bit hash for every record
+2. Each bit captures which side of a hyperplane the embedding falls on
+3. **Hamming distance** between hashes approximates angular distance in the full space
+4. `simhash_query()` pre-filters by Hamming distance, then ranks by exact cosine
+
+```python
+db.fit_simhash(n_bits=64, seed=42)  # one-time setup
+
+# Find similar records using high-dimensional proximity
+results = db.simhash_query(
+    query_embedding=emb,
+    max_hamming=12,   # candidates within 12 bit-flips
+    gap=0,            # optional gap filter
+    k=10
+)
+# Each result includes 'hamming' (bit distance) and 'score' (cosine)
+```
+
+New records are automatically hashed on `insert()` once planes are fitted. Hyperplanes are stored in the database, so hashing is portable and deterministic across sessions.
+
+Use SimHash when cell-grid search isn't finding records you expect — it catches cross-cell neighbors that PCA projection scattered.
 
 ### Embedding model consistency
 
