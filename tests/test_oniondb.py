@@ -3,6 +3,7 @@ Standalone test suite for OnionDB.
 No AIGalaxy dependencies — fresh DB per test.
 """
 import os
+import json
 import math
 import random
 import subprocess
@@ -787,3 +788,491 @@ class TestCLI:
         result = self._run_cli("--help")
         assert result.returncode == 0
         assert "oniondb" in result.stdout.lower()
+
+
+# ═══════════════════════════════════════
+# v0.4.0: UPDATE WITH IMPORTANCE CASCADE
+# ═══════════════════════════════════════
+
+class TestUpdate:
+    def test_update_content(self, db):
+        db.insert("u1", "Original", importance=0.5)
+        result = db.update("u1", content="Updated")
+        assert result is not None
+        mem = db.get("u1")
+        assert mem["content"] == "Updated"
+        assert mem["importance"] == pytest.approx(0.5)
+
+    def test_update_importance_cascades(self, db):
+        db.insert("u2", "Test", importance=0.3)
+        old = db.get("u2")
+        assert old["gap"] == 4  # 0.3 → gap 4
+
+        result = db.update("u2", importance=0.99)
+        assert result["gap"] == 0  # should cascade to gap 0
+        mem = db.get("u2")
+        assert mem["gap"] == 0
+        assert mem["importance"] == pytest.approx(0.99)
+
+    def test_update_category(self, db):
+        db.insert("u3", "Test", importance=0.5, category="old")
+        db.update("u3", category="new")
+        mem = db.get("u3")
+        assert mem["category"] == "new"
+
+    def test_update_metadata(self, db):
+        db.insert("u4", "Test", importance=0.5, metadata='{"v": 1}')
+        db.update("u4", metadata='{"v": 2}')
+        mem = db.get("u4")
+        assert mem["metadata"] == '{"v": 2}'
+
+    def test_update_nonexistent(self, db):
+        result = db.update("ghost", content="nope")
+        assert result is None
+
+    def test_update_preserves_embedding(self, db):
+        emb = [0.1] * 32
+        db.insert("u5", "Embedded", importance=0.5, embedding=emb)
+        db.update("u5", content="Updated content")
+        mem = db.get("u5")
+        assert mem["content"] == "Updated content"
+        assert mem["_emb"] is not None
+        assert len(mem["_emb"]) == 32
+
+    def test_update_multiple_fields(self, db):
+        db.insert("u6", "Original", importance=0.3, category="draft")
+        db.update("u6", content="Revised", importance=0.9, category="final")
+        mem = db.get("u6")
+        assert mem["content"] == "Revised"
+        assert mem["importance"] == pytest.approx(0.9)
+        assert mem["category"] == "final"
+        assert mem["gap"] == 1  # 0.9 → gap 1
+
+
+# ═══════════════════════════════════════
+# v0.4.0: CATEGORY FILTERING
+# ═══════════════════════════════════════
+
+class TestCategoryFilter:
+    @pytest.fixture
+    def categorized_db(self, db):
+        """DB with records in different categories."""
+        for i in range(20):
+            cat = "error" if i % 3 == 0 else "info"
+            db.insert(f"cat-{i}", f"Item {i}", importance=0.5,
+                      category=cat, theta=10.0, phi=5.0)
+        return db
+
+    def test_horizontal_with_category(self, categorized_db):
+        # Get the gap where records are stored (0.5 importance)
+        sample = categorized_db.get("cat-0")
+        gap = sample["gap"]
+        all_results = categorized_db.horizontal(gap=gap, theta=10.0, phi=5.0, k=100)
+        filtered = categorized_db.horizontal(gap=gap, theta=10.0, phi=5.0, k=100,
+                                              category="error")
+        assert len(filtered) < len(all_results)
+        assert all(r["category"] == "error" for r in filtered)
+
+    def test_grf_with_category(self, categorized_db):
+        all_results = categorized_db.grf(theta=10.0, phi=5.0, k_per_gap=100)
+        filtered = categorized_db.grf(theta=10.0, phi=5.0, k_per_gap=100,
+                                       category="error")
+        # Filtered should only have error records
+        for gap_id, records in filtered.items():
+            assert all(r["category"] == "error" for r in records)
+
+    def test_shell_scan_with_category(self, categorized_db):
+        sample = categorized_db.get("cat-0")
+        gap = sample["gap"]
+        all_results = categorized_db.shell_scan(gap=gap)
+        filtered = categorized_db.shell_scan(gap=gap, category="info")
+        assert len(filtered) <= len(all_results)
+        assert all(r["category"] == "info" for r in filtered)
+
+    def test_range_scan_with_category(self, categorized_db):
+        all_results = categorized_db.range_scan(0, 4)
+        filtered = categorized_db.range_scan(0, 4, category="error")
+        assert len(filtered) <= len(all_results)
+        assert all(r["category"] == "error" for r in filtered)
+
+    def test_category_none_returns_all(self, categorized_db):
+        sample = categorized_db.get("cat-0")
+        gap = sample["gap"]
+        results = categorized_db.horizontal(gap=gap, theta=10.0, phi=5.0,
+                                             k=100, category=None)
+        assert len(results) == 20
+
+
+# ═══════════════════════════════════════
+# v0.4.0: BULK DELETE
+# ═══════════════════════════════════════
+
+class TestBulkDelete:
+    def test_bulk_delete_multiple(self, db):
+        for i in range(5):
+            db.insert(f"bd-{i}", f"Item {i}", importance=0.5)
+        deleted = db.bulk_delete(["bd-0", "bd-2", "bd-4"])
+        assert deleted == 3
+        assert db.count() == 2
+        assert db.get("bd-1") is not None
+        assert db.get("bd-0") is None
+
+    def test_bulk_delete_empty(self, db):
+        assert db.bulk_delete([]) == 0
+
+    def test_bulk_delete_nonexistent(self, db):
+        db.insert("bd-x", "Test", importance=0.5)
+        deleted = db.bulk_delete(["ghost1", "ghost2"])
+        assert deleted == 0
+        assert db.count() == 1
+
+
+# ═══════════════════════════════════════
+# v0.4.0: PAGINATION
+# ═══════════════════════════════════════
+
+class TestPagination:
+    def test_shell_scan_offset(self, populated_db):
+        page1 = populated_db.shell_scan(gap=4, limit=3, offset=0)
+        page2 = populated_db.shell_scan(gap=4, limit=3, offset=3)
+        if page1 and page2:
+            ids1 = {r["id"] for r in page1}
+            ids2 = {r["id"] for r in page2}
+            assert ids1.isdisjoint(ids2)  # no overlap
+
+    def test_range_scan_offset(self, populated_db):
+        page1 = populated_db.range_scan(0, 4, limit=5, offset=0)
+        page2 = populated_db.range_scan(0, 4, limit=5, offset=5)
+        if page1 and page2:
+            ids1 = {r["id"] for r in page1}
+            ids2 = {r["id"] for r in page2}
+            assert ids1.isdisjoint(ids2)
+
+    def test_offset_beyond_data(self, populated_db):
+        results = populated_db.shell_scan(gap=0, limit=10, offset=9999)
+        assert results == []
+
+
+# ═══════════════════════════════════════
+# v0.4.0: ITERATION, EXPORT, IMPORT
+# ═══════════════════════════════════════
+
+class TestIterExportImport:
+    def test_iter_all(self, populated_db):
+        all_records = list(populated_db.iter_all(batch_size=10))
+        assert len(all_records) == 50
+
+    def test_iter_all_empty(self, db):
+        assert list(db.iter_all()) == []
+
+    def test_export_import_roundtrip(self, populated_db, tmp_path):
+        export_path = str(tmp_path / "export.jsonl")
+        exported = populated_db.export_jsonl(export_path)
+        assert exported == 50
+        assert os.path.exists(export_path)
+
+        # Import into fresh DB
+        db2_path = str(tmp_path / "import.db")
+        db2 = OnionDB(db2_path)
+        imported = db2.import_jsonl(export_path)
+        assert imported == 50
+        assert db2.count() == 50
+        db2.close()
+
+    def test_export_preserves_content(self, db, tmp_path):
+        db.insert("exp-1", "Export test 🧅", importance=0.7, category="test")
+        path = str(tmp_path / "single.jsonl")
+        db.export_jsonl(path)
+
+        db2 = OnionDB(str(tmp_path / "import2.db"))
+        db2.import_jsonl(path)
+        mem = db2.get("exp-1")
+        assert mem["content"] == "Export test 🧅"
+        assert mem["category"] == "test"
+        db2.close()
+
+
+# ═══════════════════════════════════════
+# v0.4.0: TEMPORAL GAP ASSIGNMENT
+# ═══════════════════════════════════════
+
+class TestTemporalGaps:
+    def test_assign_temporal_gaps(self, db):
+        # Insert with different origin_dates
+        for i in range(10):
+            db.insert(f"tg-{i}", f"Item {i}", importance=0.5,
+                      origin_date=f"2025-01-{i+1:02d}T00:00:00")
+        counts = db.assign_temporal_gaps()
+        assert isinstance(counts, dict)
+        assert sum(counts.values()) == 10
+
+    def test_assign_temporal_gaps_empty(self, db):
+        result = db.assign_temporal_gaps()
+        assert result == {}
+
+    def test_temporal_grf_after_assignment(self, db):
+        for i in range(10):
+            db.insert(f"tga-{i}", f"Item {i}", importance=0.5,
+                      origin_date=f"2025-01-{i+1:02d}T00:00:00",
+                      theta=10.0, phi=5.0)
+        db.assign_temporal_gaps()
+        result = db.temporal_grf(theta=10.0, phi=5.0, k_per_gap=10)
+        assert isinstance(result, dict)
+        assert len(result) > 0  # should now have results
+
+
+# ═══════════════════════════════════════
+# v0.4.0: ORIGIN DATE AUTO-SET
+# ═══════════════════════════════════════
+
+class TestOriginDate:
+    def test_auto_set_origin_date(self, db):
+        db.insert("od-1", "Auto date", importance=0.5)
+        mem = db.get("od-1")
+        assert mem.get("origin_date") is not None
+        assert "T" in mem["origin_date"]  # ISO format
+
+    def test_explicit_origin_date(self, db):
+        db.insert("od-2", "Explicit date", importance=0.5,
+                  origin_date="2020-01-01T00:00:00")
+        mem = db.get("od-2")
+        assert mem["origin_date"] == "2020-01-01T00:00:00"
+
+
+# ═══════════════════════════════════════
+# v0.4.0: PCA IN DB
+# ═══════════════════════════════════════
+
+class TestPCAInDB:
+    def test_pca_stored_in_db(self, populated_db, tmp_path):
+        populated_db.fit_projection(save=True)
+        # PCA should be in the config table
+        row = populated_db.conn.execute(
+            "SELECT value FROM config WHERE key = 'pca_projection'"
+        ).fetchone()
+        assert row is not None
+        import json
+        data = json.loads(row[0])
+        assert "components" in data
+        assert "mean" in data
+
+    def test_pca_survives_db_move(self, populated_db, tmp_path):
+        populated_db.fit_projection(save=True)
+        db_path = populated_db.db_path
+        populated_db.close()
+
+        # Move DB to a new location WITHOUT the JSON file
+        import shutil
+        new_path = str(tmp_path / "subdir" / "moved.db")
+        os.makedirs(os.path.dirname(new_path), exist_ok=True)
+        shutil.copy2(db_path, new_path)
+        # Don't copy pca_projection.json
+
+        db2 = OnionDB(new_path)
+        assert db2._pca is not None  # loaded from DB, not JSON
+        db2.close()
+
+
+# ═══════════════════════════════════════
+# v0.4.0: INPUT VALIDATION
+# ═══════════════════════════════════════
+
+class TestInputValidation:
+    def test_empty_id_raises(self, db):
+        with pytest.raises(ValueError, match="non-empty string"):
+            db.insert("", "content", importance=0.5)
+
+    def test_none_content_raises(self, db):
+        with pytest.raises(ValueError, match="must not be None"):
+            db.insert("x", None, importance=0.5)
+
+    def test_importance_too_high_raises(self, db):
+        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+            db.insert("x", "content", importance=1.5)
+
+    def test_importance_negative_raises(self, db):
+        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+            db.insert("x", "content", importance=-0.1)
+
+    def test_boundary_values_accepted(self, db):
+        """0.0 and 1.0 should be accepted (inclusive bounds)."""
+        db.insert("low", "low", importance=0.0)
+        db.insert("high", "high", importance=1.0)
+        assert db.count() == 2
+
+
+# ═══════════════════════════════════════
+# v0.4.0: TEMPORAL GRF CATEGORY FILTER
+# ═══════════════════════════════════════
+
+class TestTemporalGRFCategory:
+    def test_temporal_grf_filters_by_category(self, db):
+        for i in range(10):
+            cat = "alpha" if i % 2 == 0 else "beta"
+            db.insert(f"tc-{i}", f"Item {i}", importance=0.5,
+                      category=cat, theta=10.0, phi=5.0)
+        # Set temporal_gap for all
+        db.conn.execute("UPDATE records SET temporal_gap = 1")
+        db.conn.commit()
+
+        all_results = db.temporal_grf(theta=10.0, phi=5.0, k_per_gap=100)
+        filtered = db.temporal_grf(theta=10.0, phi=5.0, k_per_gap=100,
+                                    category="alpha")
+
+        if 1 in all_results and 1 in filtered:
+            assert len(filtered[1]) < len(all_results[1])
+            assert all(r["category"] == "alpha" for r in filtered[1])
+
+    def test_temporal_grf_category_none_returns_all(self, db):
+        for i in range(6):
+            db.insert(f"tcn-{i}", f"Item {i}", importance=0.5,
+                      theta=10.0, phi=5.0, category="mixed")
+        db.conn.execute("UPDATE records SET temporal_gap = 0")
+        db.conn.commit()
+
+        result = db.temporal_grf(theta=10.0, phi=5.0, k_per_gap=100,
+                                  category=None)
+        if 0 in result:
+            assert len(result[0]) == 6
+
+
+# ═══════════════════════════════════════
+# v0.4.0: FIT PROJECTION MIXED DIMENSIONS
+# ═══════════════════════════════════════
+
+class TestFitProjectionMixedDims:
+    def test_mixed_dims_skipped(self, db):
+        """Records with wrong embedding dimension should be filtered, not crash."""
+        import struct
+        # Insert 15 records with dim=32
+        for i in range(15):
+            emb = [random.gauss(0, 1) for _ in range(32)]
+            db.insert(f"ok-{i}", f"Good {i}", importance=0.5, embedding=emb)
+
+        # Manually inject 2 rogue records with dim=16
+        rogue_emb = [0.1] * 16
+        rogue_blob = struct.pack(f'{16}f', *rogue_emb)
+        db.conn.execute("""
+            INSERT OR REPLACE INTO records
+            (id, content, gap, theta, phi, depth, cell_theta, cell_phi,
+             importance, embedding)
+            VALUES (?, ?, 2, 0, 0, 0.5, 0, 0, 0.5, ?)
+        """, ("rogue-1", "Bad dim", rogue_blob))
+        db.conn.execute("""
+            INSERT OR REPLACE INTO records
+            (id, content, gap, theta, phi, depth, cell_theta, cell_phi,
+             importance, embedding)
+            VALUES (?, ?, 2, 0, 0, 0.5, 0, 0, 0.5, ?)
+        """, ("rogue-2", "Bad dim 2", rogue_blob))
+        db.conn.commit()
+
+        result = db.fit_projection(save=False)
+        assert "error" not in result
+        assert result["n_samples"] == 15  # only good records
+        assert result["skipped_dim_mismatch"] == 2
+        assert result["dim"] == 32
+
+
+# ═══════════════════════════════════════
+# v0.4.0: IMPORT JSONL CHUNKING
+# ═══════════════════════════════════════
+
+class TestImportJSONLChunking:
+    def test_chunk_boundaries(self, db, tmp_path):
+        """Import with chunk_size smaller than total records."""
+        path = str(tmp_path / "chunked.jsonl")
+        with open(path, "w") as f:
+            for i in range(7):
+                f.write(json.dumps({"id": f"ch-{i}", "content": f"Item {i}",
+                                     "importance": 0.5}) + "\n")
+
+        imported = db.import_jsonl(path, chunk_size=3)
+        assert imported == 7
+        assert db.count() == 7
+
+    def test_exact_chunk_boundary(self, db, tmp_path):
+        """Records count is exact multiple of chunk_size."""
+        path = str(tmp_path / "exact.jsonl")
+        with open(path, "w") as f:
+            for i in range(6):
+                f.write(json.dumps({"id": f"ex-{i}", "content": f"Item {i}",
+                                     "importance": 0.5}) + "\n")
+
+        imported = db.import_jsonl(path, chunk_size=3)
+        assert imported == 6
+        assert db.count() == 6
+
+    def test_origin_date_preserved_on_roundtrip(self, db, tmp_path):
+        """Export→import should preserve origin_date (regression for batch_insert bug)."""
+        db.insert("rt-1", "Roundtrip test", importance=0.7,
+                  origin_date="2020-06-15T12:00:00")
+        db.insert("rt-2", "Another test", importance=0.4,
+                  origin_date="2019-01-01T00:00:00")
+
+        export_path = str(tmp_path / "roundtrip.jsonl")
+        db.export_jsonl(export_path)
+
+        db2 = OnionDB(str(tmp_path / "roundtrip.db"))
+        db2.import_jsonl(export_path)
+        m1 = db2.get("rt-1")
+        m2 = db2.get("rt-2")
+        assert m1["origin_date"] == "2020-06-15T12:00:00"
+        assert m2["origin_date"] == "2019-01-01T00:00:00"
+        db2.close()
+
+
+# ═══════════════════════════════════════
+# v0.4.0: SCHEMA MIGRATION
+# ═══════════════════════════════════════
+
+class TestSchemaMigration:
+    def test_memories_table_migrated_to_records(self, tmp_path):
+        """Opening a DB with legacy 'memories' table should auto-migrate."""
+        db_path = str(tmp_path / "legacy.db")
+
+        # Create a legacy DB with 'memories' table (old schema)
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.executescript("""
+            CREATE TABLE memories (
+                id          TEXT PRIMARY KEY,
+                content     TEXT NOT NULL,
+                gap         INTEGER NOT NULL,
+                theta       REAL NOT NULL,
+                phi         REAL NOT NULL,
+                depth       REAL NOT NULL DEFAULT 0.5,
+                cell_theta  INTEGER NOT NULL,
+                cell_phi    INTEGER NOT NULL,
+                importance  REAL NOT NULL DEFAULT 0.5,
+                category    TEXT,
+                embedding   BLOB,
+                metadata    TEXT,
+                subshell    INTEGER,
+                temporal_gap INTEGER,
+                origin_date TEXT,
+                created_at  TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        conn.execute("""
+            INSERT INTO memories (id, content, gap, theta, phi, depth,
+                                  cell_theta, cell_phi, importance)
+            VALUES ('legacy-1', 'Old record', 2, 10.0, 5.0, 0.5, 3, 2, 0.5)
+        """)
+        conn.commit()
+        conn.close()
+
+        # Open with OnionDB — should auto-migrate
+        db = OnionDB(db_path)
+        tables = {row[0] for row in db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()}
+        assert "records" in tables
+        assert "memories" not in tables
+
+        # Data should be intact
+        mem = db.get("legacy-1")
+        assert mem is not None
+        assert mem["content"] == "Old record"
+        assert db.count() == 1
+        db.close()

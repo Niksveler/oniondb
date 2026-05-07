@@ -157,7 +157,9 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 |----------------------------------------|------------------------------------------------------|
 | `insert(id, content, importance, ...)` | Insert a record with auto-computed geometric address |
 | `get(id)`                              | Retrieve a record by ID                              |
+| `update(id, **kwargs)`                 | Partial update — importance changes cascade address  |
 | `delete(id)`                           | Delete a record by ID                                |
+| `bulk_delete(ids)`                     | Delete multiple records in one transaction           |
 | `count(gap=None)`                      | Count records (optionally per gap)                   |
 | `batch_insert(items)`                  | Insert multiple records in a single transaction      |
 | `close()`                              | Close the database connection                        |
@@ -170,18 +172,29 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 | `grf(theta, phi, ...)`                  | **Geometric Ray Filter** — drill through all shells  |
 | `reverse_ray(start_embedding, ...)`     | Curved semantic trace from outer to inner            |
 | `temporal_grf(theta, phi, ...)`         | Drill through time-based shells                      |
-| `shell_scan(gap, limit)`                | Return everything at one importance level            |
+| `shell_scan(gap, limit, offset)`        | Return everything at one importance level            |
 | `range_scan(gap_start, gap_end, limit)` | Return everything between two levels                 |
+
+All query methods support `category=...` for filtering by record category.
+
+### Data Operations
+
+| Method                          | Description                                        |
+|---------------------------------|----------------------------------------------------|
+| `iter_all(batch_size=100)`      | Generator that yields all records in batches       |
+| `export_jsonl(path)`            | Export all records to portable JSONL file           |
+| `import_jsonl(path, chunk=1000)`| Streaming JSONL import (chunked, memory-safe)       |
 
 ### Configuration
 
-| Method                      | Description                                      |
-|-----------------------------|--------------------------------------------------|
-| `fit_projection(save=True)` | Self-calibrate PCA from stored embeddings        |
-| `fit_boundaries(n_gaps=5)`  | Suggest quantile-based boundaries from data      |
-| `reindex(boundaries=None)`  | Recalculate all gap/depth/cell assignments       |
-| `stats()`                   | Database statistics (gaps, categories, grid)     |
-| `cell_density(gap)`         | Cell occupancy map for a gap                     |
+| Method                        | Description                                      |
+|-------------------------------|--------------------------------------------------|
+| `fit_projection(save=True)`   | Self-calibrate PCA from stored embeddings        |
+| `fit_boundaries(n_gaps=5)`    | Suggest quantile-based boundaries from data      |
+| `reindex(boundaries=None)`    | Recalculate all gap/depth/cell assignments       |
+| `assign_temporal_gaps()`      | Auto-bucket records into time shells             |
+| `stats()`                     | Database statistics (gaps, categories, grid)     |
+| `cell_density(gap)`           | Cell occupancy map for a gap                     |
 
 ### Constructor Options
 

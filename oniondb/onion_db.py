@@ -19,6 +19,7 @@ import json
 import os
 import threading
 from typing import Optional
+from datetime import datetime as _dt, timezone as _tz
 
 # Optional numpy acceleration — zero-dependency fallback if not installed
 try:
@@ -117,6 +118,12 @@ class OnionDB:
             CREATE INDEX IF NOT EXISTS idx_gap ON records(gap);
             CREATE INDEX IF NOT EXISTS idx_cell ON records(gap, cell_theta, cell_phi);
             CREATE INDEX IF NOT EXISTS idx_gap_range ON records(gap, importance);
+            CREATE INDEX IF NOT EXISTS idx_category ON records(category);
+
+            CREATE TABLE IF NOT EXISTS config (
+                key     TEXT PRIMARY KEY,
+                value   TEXT NOT NULL
+            );
         """)
         # Insert shell boundaries if empty
         existing = self.conn.execute("SELECT COUNT(*) FROM shells").fetchone()[0]
@@ -176,9 +183,29 @@ class OnionDB:
         return theta, max(-90, min(90, phi))
 
     def _load_pca(self):
-        """Load PCA projection matrix from JSON. Falls back to v0 if missing."""
-        pca_path = os.path.join(os.path.dirname(self.db_path), "pca_projection.json")
+        """Load PCA projection. Checks DB config table first, then JSON file."""
         self._pca = None
+        # Try DB config table first (portable — travels with the .db file)
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM config WHERE key = 'pca_projection'"
+            ).fetchone()
+            if row:
+                data = json.loads(row[0])
+                self._pca = {
+                    "mean": data["mean"],
+                    "pc1": data["components"][0],
+                    "pc2": data["components"][1],
+                    "pc1_range": data.get("pc1_range"),
+                    "pc2_range": data.get("pc2_range"),
+                }
+                return
+        except Exception:
+            pass
+        # Fall back to JSON file next to the database
+        pca_path = os.path.join(
+            os.path.dirname(self.db_path) or ".", "pca_projection.json"
+        )
         if os.path.exists(pca_path):
             try:
                 with open(pca_path) as f:
@@ -250,9 +277,12 @@ class OnionDB:
                category: str = None, embedding: list = None,
                theta: float = None, phi: float = None,
                poincare_x: float = None, poincare_y: float = None,
-               metadata: str = None, _commit: bool = True) -> dict:
+               metadata: str = None, origin_date: str = None,
+               _commit: bool = True) -> dict:
         """
         Insert a data point into the onion.
+
+        If a record with the same ``id`` already exists, it is replaced.
 
         Address is computed automatically:
         - gap: from importance
@@ -260,7 +290,21 @@ class OnionDB:
         - depth: from importance within gap range
 
         Returns: dict with the computed address.
+
+        Raises:
+            ValueError: If id is empty, content is None, or importance is
+                        outside [0.0, 1.0].
         """
+        # ─── Input validation ───
+        if not id:
+            raise ValueError("id must be a non-empty string")
+        if content is None:
+            raise ValueError("content must not be None")
+        if not (0.0 <= importance <= 1.0):
+            raise ValueError(
+                f"importance must be between 0.0 and 1.0, got {importance}"
+            )
+
         gap = self._importance_to_gap(importance)
         depth = self._compute_depth(importance, gap)
 
@@ -281,14 +325,16 @@ class OnionDB:
         if embedding:
             emb_blob = struct.pack(f'{len(embedding)}f', *embedding)
 
+        _origin = origin_date or _dt.now(_tz.utc).isoformat()
+
         with self._lock:
             self.conn.execute("""
                 INSERT OR REPLACE INTO records
                 (id, content, gap, theta, phi, depth, cell_theta, cell_phi,
-                 importance, category, embedding, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 importance, category, embedding, metadata, origin_date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (id, content, gap, theta, phi, depth, cell_t, cell_p,
-                  importance, category, emb_blob, metadata))
+                  importance, category, emb_blob, metadata, _origin))
             if _commit:
                 self.conn.commit()
 
@@ -303,13 +349,14 @@ class OnionDB:
     # Standard column list for all queries
     _RECORD_COLS = """id, content, gap, theta, phi, depth, importance, category,
                       embedding, cell_theta, cell_phi, subshell, temporal_gap,
-                      origin_date"""
+                      origin_date, metadata"""
 
     def horizontal(self, gap: int, theta: float, phi: float,
                    k: int = 10, neighbor_radius: int = 4,
                    query_embedding: list = None,
                    subshell: int = None,
-                   subshell_boost: float = 0.0) -> list:
+                   subshell_boost: float = 0.0,
+                   category: str = None) -> list:
         """
         Horizontal search: find items near (θ, φ) within one gap.
 
@@ -323,6 +370,7 @@ class OnionDB:
             subshell_boost: If > 0, BOOST items in this subshell by this
                             amount instead of hard filtering. E.g. 0.1 adds
                             10% to matching items' scores. (Fix #3: soft filter)
+            category: If provided, only return records with this category.
 
         Returns: List of record dicts, sorted by relevance.
         """
@@ -348,12 +396,18 @@ class OnionDB:
             subshell_clause = "AND subshell = ?"
             params.append(subshell)
 
+        category_clause = ""
+        if category is not None:
+            category_clause = "AND category = ?"
+            params.append(category)
+
         sql = f"""
             SELECT {self._RECORD_COLS}
             FROM records
             WHERE gap = ?
             AND (cell_theta, cell_phi) IN ({placeholders})
             {subshell_clause}
+            {category_clause}
         """
         rows = self.conn.execute(sql, params).fetchall()
 
@@ -386,7 +440,8 @@ class OnionDB:
             k_per_gap: int = 5, neighbor_radius: int = 4,
             query_embedding: list = None,
             subshell: int = None,
-            subshell_boost: float = 0.0) -> dict:
+            subshell_boost: float = 0.0,
+            category: str = None) -> dict:
         """
         GRF — Geometric Ray Filter.
 
@@ -411,6 +466,7 @@ class OnionDB:
                       When set with boost>0: soft boost (prefer this subshell).
             subshell_boost: Score multiplier for matching subshell items.
                             0.0 = hard filter, >0.0 = soft boost.
+            category: If provided, only return records with this category.
 
         Returns: Dict mapping gap_id → list of records.
         """
@@ -421,7 +477,8 @@ class OnionDB:
                                     neighbor_radius=neighbor_radius,
                                     query_embedding=query_embedding,
                                     subshell=subshell,
-                                    subshell_boost=subshell_boost)
+                                    subshell_boost=subshell_boost,
+                                    category=category)
             if items:
                 result[gap_id] = items
         return result
@@ -648,7 +705,8 @@ class OnionDB:
     # Return everything in one gap
     # ═══════════════════════════════════════════
 
-    def shell_scan(self, gap: int, limit: int = 1000) -> list:
+    def shell_scan(self, gap: int, limit: int = 1000,
+                   offset: int = 0, category: str = None) -> list:
         """
         Shell scan: return all data in gap E.
 
@@ -657,16 +715,26 @@ class OnionDB:
         Args:
             gap: Which gap to scan (0=innermost/core)
             limit: Maximum results
+            offset: Number of records to skip (for pagination)
+            category: If provided, only return records with this category.
 
         Returns: List of record dicts.
         """
+        category_clause = ""
+        params = [gap]
+        if category is not None:
+            category_clause = "AND category = ?"
+            params.append(category)
+        params.extend([limit, offset])
+
         rows = self.conn.execute(f"""
             SELECT {self._RECORD_COLS}
             FROM records
             WHERE gap = ?
+            {category_clause}
             ORDER BY importance DESC
-            LIMIT ?
-        """, (gap, limit)).fetchall()
+            LIMIT ? OFFSET ?
+        """, params).fetchall()
 
         return self._rows_to_dicts(rows)
 
@@ -678,7 +746,8 @@ class OnionDB:
     def temporal_grf(self, theta: float, phi: float,
                      k_per_gap: int = 5, neighbor_radius: int = 1,
                      query_embedding: list = None,
-                     subshell: int = None) -> dict:
+                     subshell: int = None,
+                     category: str = None) -> dict:
         """
         Temporal GRF — drill through TIME shells at direction (θ, φ).
 
@@ -716,12 +785,18 @@ class OnionDB:
                 subshell_clause = "AND subshell = ?"
                 params.append(subshell)
 
+            category_clause = ""
+            if category is not None:
+                category_clause = "AND category = ?"
+                params.append(category)
+
             sql = f"""
                 SELECT {self._RECORD_COLS}
                 FROM records
                 WHERE temporal_gap = ?
                 AND (cell_theta, cell_phi) IN ({placeholders})
                 {subshell_clause}
+                {category_clause}
             """
             rows = self.conn.execute(sql, params).fetchall()
             items = self._rows_to_dicts(rows)
@@ -748,7 +823,8 @@ class OnionDB:
     # ═══════════════════════════════════════════
 
     def range_scan(self, gap_start: int, gap_end: int,
-                   limit: int = 1000) -> list:
+                   limit: int = 1000, offset: int = 0,
+                   category: str = None) -> list:
         """
         Range scan: return all data between gap E and gap B (inclusive).
 
@@ -758,16 +834,26 @@ class OnionDB:
             gap_start: Inner boundary (lower gap number = more important)
             gap_end: Outer boundary (higher gap number = less important)
             limit: Maximum results
+            offset: Number of records to skip (for pagination)
+            category: If provided, only return records with this category.
 
-        Returns: List of memory dicts.
+        Returns: List of record dicts.
         """
+        category_clause = ""
+        params = [gap_start, gap_end]
+        if category is not None:
+            category_clause = "AND category = ?"
+            params.append(category)
+        params.extend([limit, offset])
+
         rows = self.conn.execute(f"""
             SELECT {self._RECORD_COLS}
             FROM records
             WHERE gap >= ? AND gap <= ?
+            {category_clause}
             ORDER BY gap ASC, importance DESC
-            LIMIT ?
-        """, (gap_start, gap_end, limit)).fetchall()
+            LIMIT ? OFFSET ?
+        """, params).fetchall()
 
         return self._rows_to_dicts(rows)
 
@@ -817,18 +903,18 @@ class OnionDB:
     # ═══════════════════════════════════════════
 
     def _rows_to_dicts(self, rows: list[tuple]) -> list[dict]:
-        """Convert query rows to record dicts. Expects 14-column rows."""
+        """Convert query rows to record dicts. Expects 15-column rows."""
         results = []
         for r in rows:
             mid, content, gap, theta, phi, depth, imp, cat, emb, ct, cp, \
-                sub, tgap, odate = r
+                sub, tgap, odate, meta = r
             d = {
                 "id": mid, "content": content, "gap": gap,
                 "theta": round(theta, 2), "phi": round(phi, 2),
                 "depth": round(depth, 3), "importance": imp,
                 "category": cat, "cell": (ct, cp),
                 "subshell": sub, "temporal_gap": tgap,
-                "origin_date": odate,
+                "origin_date": odate, "metadata": meta,
                 "address": f"({gap}, {theta:.1f}°, {phi:.1f}°, d={depth:.2f})"
             }
             if emb:
@@ -963,11 +1049,241 @@ class OnionDB:
                     poincare_x=item.get("poincare_x"),
                     poincare_y=item.get("poincare_y"),
                     metadata=item.get("metadata"),
+                    origin_date=item.get("origin_date"),
                     _commit=False,
                 )
                 addresses.append(addr)
             self.conn.commit()
         return addresses
+
+    # ═══════════════════════════════════════════
+    # CRUD — update, bulk_delete
+    # ═══════════════════════════════════════════
+
+    def update(self, id: str, **kwargs) -> Optional[dict]:
+        """
+        Partially update a record. Only provided fields are changed.
+
+        If importance changes, gap/depth/cell are recomputed automatically.
+
+        Supported kwargs: content, importance, category, metadata,
+                          embedding, origin_date.
+
+        Args:
+            id: Record ID to update.
+            **kwargs: Fields to update.
+
+        Returns: Updated address dict, or None if record not found.
+        """
+        existing = self.get(id)
+        if not existing:
+            return None
+
+        # Merge: start from existing, overlay with kwargs
+        content = kwargs.get("content", existing["content"])
+        importance = kwargs.get("importance", existing["importance"])
+        category = kwargs.get("category", existing.get("category"))
+        metadata = kwargs.get("metadata", existing.get("metadata"))
+        origin_date = kwargs.get("origin_date", existing.get("origin_date"))
+
+        # Embedding: use new if provided, else reconstruct from existing BLOB
+        embedding = kwargs.get("embedding")
+        if embedding is None and existing.get("_emb"):
+            embedding = existing["_emb"]
+
+        # Recompute geometric address from (potentially new) importance
+        gap = self._importance_to_gap(importance)
+        depth = self._compute_depth(importance, gap)
+
+        # Determine angular coordinates
+        theta, phi = existing["theta"], existing["phi"]
+        if embedding and (importance != existing["importance"] or "embedding" in kwargs):
+            # Re-project if importance or embedding changed
+            theta, phi = self._embed_to_angles(embedding)
+
+        cell_t, cell_p = self._angle_to_cell(theta, phi)
+
+        emb_blob = None
+        if embedding:
+            if isinstance(embedding, list):
+                emb_blob = struct.pack(f'{len(embedding)}f', *embedding)
+            else:
+                # Already a bytes blob from _emb
+                emb_blob = struct.pack(f'{len(embedding)}f', *embedding)
+
+        _origin = origin_date or _dt.now(_tz.utc).isoformat()
+
+        with self._lock:
+            self.conn.execute("""
+                UPDATE records SET
+                    content = ?, gap = ?, theta = ?, phi = ?,
+                    depth = ?, cell_theta = ?, cell_phi = ?,
+                    importance = ?, category = ?, embedding = ?,
+                    metadata = ?, origin_date = ?
+                WHERE id = ?
+            """, (content, gap, theta, phi, depth, cell_t, cell_p,
+                  importance, category, emb_blob, metadata, _origin, id))
+            self.conn.commit()
+
+        return {"id": id, "gap": gap, "theta": theta, "phi": phi,
+                "depth": depth, "cell": (cell_t, cell_p)}
+
+    def bulk_delete(self, ids: list) -> int:
+        """
+        Delete multiple records by ID.
+
+        Args:
+            ids: List of record IDs to delete.
+
+        Returns: Number of rows actually deleted.
+        """
+        if not ids:
+            return 0
+        placeholders = ",".join(["?" for _ in ids])
+        with self._lock:
+            cursor = self.conn.execute(
+                f"DELETE FROM records WHERE id IN ({placeholders})", ids
+            )
+            self.conn.commit()
+        return cursor.rowcount
+
+    # ═══════════════════════════════════════════
+    # DATA — iteration, export, import
+    # ═══════════════════════════════════════════
+
+    def iter_all(self, batch_size: int = 100):
+        """
+        Generator that yields all records in batches.
+
+        Useful for bulk processing, migration, or export.
+
+        Args:
+            batch_size: Number of records per batch.
+
+        Yields: Record dicts.
+        """
+        offset = 0
+        while True:
+            rows = self.conn.execute(f"""
+                SELECT {self._RECORD_COLS}
+                FROM records
+                ORDER BY gap ASC, importance DESC
+                LIMIT ? OFFSET ?
+            """, (batch_size, offset)).fetchall()
+            if not rows:
+                break
+            for row in self._rows_to_dicts(rows):
+                yield row
+            offset += batch_size
+
+    def export_jsonl(self, path: str) -> int:
+        """
+        Export all records to a JSONL file.
+
+        Each line is a JSON object with all record fields.
+        Embeddings are stored as float lists for portability.
+
+        Args:
+            path: File path to write to.
+
+        Returns: Number of records exported.
+        """
+        count = 0
+        with open(path, "w") as f:
+            for record in self.iter_all(batch_size=500):
+                # Convert embedding to list for JSON serialization
+                emb = record.pop("_emb", None)
+                if emb:
+                    record["embedding"] = list(emb)
+                f.write(json.dumps(record) + "\n")
+                count += 1
+        return count
+
+    def import_jsonl(self, path: str, chunk_size: int = 1000) -> int:
+        """
+        Import records from a JSONL file.
+
+        Each line must be a JSON object with at least 'id' and 'content'.
+        Streams in chunks to avoid loading entire file into memory.
+
+        Args:
+            path: File path to read from.
+            chunk_size: Number of records per batch (default: 1000).
+
+        Returns: Number of records imported.
+        """
+        total = 0
+        chunk = []
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    chunk.append(json.loads(line))
+                    if len(chunk) >= chunk_size:
+                        self.batch_insert(chunk)
+                        total += len(chunk)
+                        chunk = []
+        if chunk:
+            self.batch_insert(chunk)
+            total += len(chunk)
+        return total
+
+    # ═══════════════════════════════════════════
+    # TEMPORAL — auto-assign temporal gaps
+    # ═══════════════════════════════════════════
+
+    def assign_temporal_gaps(self) -> dict:
+        """
+        Auto-assign temporal_gap to all records based on origin_date.
+
+        Sorts records by origin_date and divides them into N_TEMPORAL_GAPS
+        equal-sized buckets. T0 = most recent, T4 = oldest.
+
+        Records without origin_date are assigned to the oldest bucket.
+
+        Returns: Dict with counts per temporal gap.
+        """
+        rows = self.conn.execute(
+            "SELECT id, origin_date FROM records ORDER BY origin_date ASC"
+        ).fetchall()
+
+        if not rows:
+            return {}
+
+        # Separate records with and without dates
+        dated = [(r[0], r[1]) for r in rows if r[1]]
+        undated = [r[0] for r in rows if not r[1]]
+
+        n = len(dated)
+        counts = {}
+
+        with self._lock:
+            if dated:
+                bucket_size = max(1, n // self.N_TEMPORAL_GAPS)
+                for i, (rid, _) in enumerate(dated):
+                    # T0 = most recent (highest indices), T4 = oldest
+                    bucket = self.N_TEMPORAL_GAPS - 1 - min(
+                        i // bucket_size, self.N_TEMPORAL_GAPS - 1
+                    )
+                    self.conn.execute(
+                        "UPDATE records SET temporal_gap = ? WHERE id = ?",
+                        (bucket, rid)
+                    )
+                    counts[bucket] = counts.get(bucket, 0) + 1
+
+            # Undated records go to oldest bucket
+            if undated:
+                oldest = self.N_TEMPORAL_GAPS - 1
+                for rid in undated:
+                    self.conn.execute(
+                        "UPDATE records SET temporal_gap = ? WHERE id = ?",
+                        (oldest, rid)
+                    )
+                counts[oldest] = counts.get(oldest, 0) + len(undated)
+
+            self.conn.commit()
+
+        return counts
 
     # ═══════════════════════════════════════════
     # PROJECTION — self-calibrating PCA
@@ -1004,8 +1320,22 @@ class OnionDB:
             if emb:
                 embeddings.append(emb)
 
+        if not embeddings:
+            return {"error": "No valid embeddings found", "n_samples": 0}
+
+        # Filter to majority dimension — protects against rogue records
+        from collections import Counter
+        dim_counts = Counter(len(e) for e in embeddings)
+        target_dim = dim_counts.most_common(1)[0][0]
+        if len(dim_counts) > 1:
+            before = len(embeddings)
+            embeddings = [e for e in embeddings if len(e) == target_dim]
+            skipped = before - len(embeddings)
+        else:
+            skipped = 0
+
         n = len(embeddings)
-        dim = len(embeddings[0])
+        dim = target_dim
 
         # Measure occupancy before
         cells_before = set()
@@ -1079,6 +1409,14 @@ class OnionDB:
         }
 
         if save:
+            # Save inside DB (portable)
+            with self._lock:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)",
+                    ("pca_projection", json.dumps(pca_data))
+                )
+                self.conn.commit()
+            # Also save JSON file for backward compatibility
             pca_path = os.path.join(
                 os.path.dirname(self.db_path) or ".", "pca_projection.json"
             )
@@ -1101,6 +1439,7 @@ class OnionDB:
         return {
             "n_samples": n,
             "dim": dim,
+            "skipped_dim_mismatch": skipped,
             "occupancy_before": round(occ_before, 3),
             "occupancy_after": round(occ_after, 3),
             "pc1_range": pc1_range,

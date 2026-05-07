@@ -2,6 +2,32 @@
 
 All notable changes to OnionDB will be documented in this file.
 
+## [0.4.0] — 2026-05-07
+
+### Added
+- **`update(id, **kwargs)`** — partial record updates with automatic importance-cascade (gap/depth/cell recomputed when importance changes).
+- **`bulk_delete(ids)`** — delete multiple records in a single transaction.
+- **`iter_all(batch_size)`** — generator for memory-efficient bulk processing.
+- **`export_jsonl(path)`** — export all records to portable JSONL format.
+- **`import_jsonl(path, chunk_size)`** — streaming JSONL import in chunks (default 1000) to avoid OOM on large files.
+- **`assign_temporal_gaps()`** — auto-bucket records into temporal shells by origin_date.
+- **Pagination** — `offset` parameter on `shell_scan()` and `range_scan()`.
+- **`category` filter on `temporal_grf()`** — now consistent with all other query methods.
+- **Input validation** — `insert()` raises `ValueError` for empty id, None content, or importance outside [0.0, 1.0].
+- **PCA stored in SQLite** — projection matrix saved in `config` table for total database portability.
+- **`metadata` and `origin_date`** — now included in all query results (was missing from `_RECORD_COLS`).
+
+### Fixed
+- **`fit_projection()` crash on mixed embedding dimensions** — now filters to majority dimension and reports `skipped_dim_mismatch` count. Previously crashed with numpy `inhomogeneous shape` error when rogue records had different embedding sizes.
+- **Schema migration** — automatic `memories` → `records` table rename on first load for backward compatibility with legacy databases.
+- **`batch_insert()` silently dropped `origin_date`** — export→import roundtrips now preserve temporal metadata correctly.
+- **CLI `info` misreported PCA status** — now checks the SQLite `config` table (where v0.4.0 stores PCA) instead of only looking for an external JSON file.
+
+### Changed
+- Timestamps use timezone-aware UTC (`datetime.now(timezone.utc)`) instead of naive `datetime.utcnow()`.
+- `import_jsonl()` now streams in chunks instead of loading entire file into memory.
+- `insert()` docstring now documents upsert behavior (existing IDs are silently replaced).
+
 ## [0.3.3] — 2026-05-05
 
 ### Fixed

@@ -77,16 +77,23 @@ def cmd_info(args):
     """Show database info and PCA status."""
     db = OnionDB(args.db)
     pca_path = os.path.join(os.path.dirname(args.db) or ".", "pca_projection.json")
-    has_pca = os.path.exists(pca_path)
+    has_pca_db = db._pca is not None
+    has_pca_json = os.path.exists(pca_path)
+    has_pca = has_pca_db or has_pca_json
 
     print(f"OnionDB: {args.db}")
     print(f"  File size:  {os.path.getsize(args.db):,} bytes")
     print(f"  Records:    {db.count()}")
     print(f"  Gaps:       {db.n_gaps}")
     print(f"  Grid:       {db.THETA_CELLS}×{db.PHI_CELLS} = {db.THETA_CELLS * db.PHI_CELLS} cells")
-    print(f"  PCA fitted: {'yes (' + pca_path + ')' if has_pca else 'no — using v0 projection'}")
+    if has_pca_db:
+        print(f"  PCA fitted: yes (stored in database)")
+    elif has_pca_json:
+        print(f"  PCA fitted: yes ({pca_path})")
+    else:
+        print(f"  PCA fitted: no — using v0 projection")
 
-    if has_pca:
+    if has_pca_json:
         with open(pca_path) as f:
             pca = json.load(f)
         print(f"  PCA dim:    {pca.get('dim', '?')}")
