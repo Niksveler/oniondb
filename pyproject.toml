@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oniondb"
-version = "0.5.0"
+version = "0.6.0"
 description = "A geometric database with importance-stratified shells and zero dependencies."
 readme = "README.md"
 authors = [{name = "Nick Sveler"}]
@@ -13,7 +13,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.9"
 keywords = [
     "database", "geometric", "vector", "embeddings",
-    "importance", "hierarchical", "sqlite", "shell", "retrieval"
+    "importance", "hierarchical", "sqlite", "shell", "retrieval",
+    "hnsw", "mass", "decay", "curriculum"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -27,11 +28,13 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Intended Audience :: Developers",
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
 ]
 
 [project.optional-dependencies]
 fast = ["numpy>=1.21"]
+hnsw = ["hnswlib>=0.8"]
+all = ["numpy>=1.21", "hnswlib>=0.8"]
 dev = ["pytest", "pytest-cov"]
 
 [project.urls]

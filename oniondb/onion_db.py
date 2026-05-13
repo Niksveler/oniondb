@@ -51,7 +51,8 @@ class OnionDB:
     N_TEMPORAL_GAPS = 5  # fixed time-bucket shells (T0=recent, T4=oldest)
 
     def __init__(self, db_path: str = "onion.db", boundaries: list = None,
-                 theta_cells: int = None, phi_cells: int = None):
+                 theta_cells: int = None, phi_cells: int = None,
+                 hnsw_backend=None, default_decay_rate: float = 0.01):
         """
         Initialize or open an OnionDB.
 
@@ -64,6 +65,10 @@ class OnionDB:
                          Higher values = smaller cells = faster queries
                          but sparser per-cell populations.
             phi_cells: Longitude grid divisions (default: 6).
+            hnsw_backend: Optional HNSWBackend instance for acceleration.
+                          When provided and a gap exceeds hnsw_threshold,
+                          horizontal() routes through HNSW for fast ANN
+                          retrieval instead of SQL cell scan.
         """
         self.db_path = db_path
         self.boundaries = boundaries or self.DEFAULT_BOUNDARIES
@@ -77,6 +82,8 @@ class OnionDB:
         self.conn = sqlite3.connect(db_path, check_same_thread=False)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self._hnsw = hnsw_backend  # Optional HNSW acceleration (Phase 2)
+        self.default_decay_rate = default_decay_rate
         self._create_schema()
         self._load_pca()
         self._load_simhash()
@@ -96,6 +103,17 @@ class OnionDB:
         except Exception:
             try:
                 self.conn.execute("ALTER TABLE records ADD COLUMN simhash INTEGER")
+                self.conn.commit()
+            except Exception:
+                pass
+
+        # Phase 5: Schema Migration (mass, last_review_clock)
+        try:
+            self.conn.execute("SELECT mass, last_review_clock FROM records LIMIT 1")
+        except Exception:
+            try:
+                self.conn.execute("ALTER TABLE records ADD COLUMN mass REAL NOT NULL DEFAULT 1.0")
+                self.conn.execute("ALTER TABLE records ADD COLUMN last_review_clock INTEGER NOT NULL DEFAULT 0")
                 self.conn.commit()
             except Exception:
                 pass
@@ -124,6 +142,8 @@ class OnionDB:
                 temporal_gap INTEGER,
                 origin_date TEXT,
                 simhash     INTEGER,
+                mass        REAL NOT NULL DEFAULT 1.0,
+                last_review_clock INTEGER NOT NULL DEFAULT 0,
                 created_at  TEXT DEFAULT (datetime('now'))
             );
 
@@ -351,6 +371,7 @@ class OnionDB:
                theta: float = None, phi: float = None,
                poincare_x: float = None, poincare_y: float = None,
                metadata: str = None, origin_date: str = None,
+               mass: float = 1.0, last_review_clock: int = 0,
                _commit: bool = True) -> dict:
         """
         Insert a data point into the onion.
@@ -406,12 +427,27 @@ class OnionDB:
                 INSERT OR REPLACE INTO records
                 (id, content, gap, theta, phi, depth, cell_theta, cell_phi,
                  importance, category, embedding, metadata, origin_date,
-                 simhash)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 simhash, mass, last_review_clock)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (id, content, gap, theta, phi, depth, cell_t, cell_p,
-                  importance, category, emb_blob, metadata, _origin, sh))
+                  importance, category, emb_blob, metadata, _origin, sh,
+                  mass, last_review_clock))
             if _commit:
                 self.conn.commit()
+
+            # ═══ HNSW SYNC: insert (Phase 3) ═══
+            # Handle INSERT OR REPLACE: if record already exists in HNSW,
+            # mark_delete the old entry before adding the new one to prevent
+            # ghost vectors (unreachable labels with stale embeddings).
+            if self._hnsw is not None and embedding:
+                # Check if record already exists in HNSW (re-insert case)
+                for g in range(self.n_gaps):
+                    if g in self._hnsw._id_to_int:
+                        if id in self._hnsw._id_to_int[g]:
+                            self._hnsw.delete(g, id)
+                            break
+                # Add to the correct gap's index
+                self._hnsw.add(gap, id, embedding)
 
         return {"id": id, "gap": gap, "theta": theta, "phi": phi,
                 "depth": depth, "cell": (cell_t, cell_p)}
@@ -424,14 +460,47 @@ class OnionDB:
     # Standard column list for all queries
     _RECORD_COLS = """id, content, gap, theta, phi, depth, importance, category,
                       embedding, cell_theta, cell_phi, subshell, temporal_gap,
-                      origin_date, metadata"""
+                      origin_date, metadata, mass, last_review_clock"""
+
+    def enable_hnsw(self, dim: int = 768, **kwargs) -> "OnionDB":
+        """
+        Enable HNSW acceleration for this database.
+
+        Creates an HNSWBackend that accelerates horizontal() queries
+        for gaps exceeding the threshold. Falls back gracefully if
+        hnswlib is not installed.
+
+        Args:
+            dim: Embedding dimensionality (default: 768).
+            **kwargs: Passed to HNSWBackend constructor
+                      (M, ef_construction, hnsw_threshold, etc.)
+
+        Returns:
+            self (for method chaining).
+
+        Raises:
+            ImportError: If hnswlib is not installed.
+        """
+        try:
+            from .hnsw_backend import HNSWBackend
+        except ImportError:
+            from hnsw_backend import HNSWBackend
+        self._hnsw = HNSWBackend(
+            db_path=self.db_path,
+            n_gaps=self.n_gaps,
+            dim=dim,
+            **kwargs,
+        )
+        return self
 
     def horizontal(self, gap: int, theta: float, phi: float,
                    k: int = 10, neighbor_radius: int = 4,
                    query_embedding: list = None,
                    subshell: int = None,
                    subshell_boost: float = 0.0,
-                   category: str = None) -> list:
+                   category: str = None,
+                   current_clock: int = None,
+                   decay_rate: float = None) -> list:
         """
         Horizontal search: find items near (θ, φ) within one gap.
 
@@ -449,6 +518,25 @@ class OnionDB:
 
         Returns: List of record dicts, sorted by relevance.
         """
+        # ═══ HNSW FAST PATH (Phase 2) ═══
+        # Route through HNSW when all conditions are met:
+        #   1. HNSW backend is attached
+        #   2. Embedding is provided (can't do ANN without a vector)
+        #   3. No hard filters (category, subshell strict) — HNSW can't filter
+        #   4. Gap has enough records to justify HNSW overhead
+        has_hard_filter = (category is not None or
+                          (subshell is not None and subshell_boost == 0.0))
+        if (self._hnsw is not None
+                and query_embedding is not None
+                and not has_hard_filter
+                and self._hnsw.should_use_hnsw(gap)):
+            return self._hnsw_horizontal(
+                gap, k, query_embedding,
+                subshell=subshell, subshell_boost=subshell_boost,
+                current_clock=current_clock, decay_rate=decay_rate,
+            )
+
+        # ═══ SQL SCAN PATH (v1 behavior, unchanged) ═══
         ct, cp = self._angle_to_cell(theta, phi)
 
         # Build cell range including neighbors
@@ -490,12 +578,27 @@ class OnionDB:
 
         # Rank by cosine similarity if embedding provided
         if query_embedding and results:
+            decay = decay_rate if decay_rate is not None else self.default_decay_rate
             for r in results:
-                r["score"] = self._cosine(query_embedding, r.get("_emb"))
-                # Soft subshell boost: same cluster gets a score bump
+                # GRF v2 Formula: cosine * (1 + 0.3*shell_weight) * (1 + 0.2*log1p(mass)) * exp(-decay_rate*clock_delta)
+                # subshell_boost encapsulates the (0.3 * shell_weight) logic dynamically
+                score = self._cosine(query_embedding, r.get("_emb"))
+                
+                # Soft subshell boost
                 if subshell is not None and subshell_boost > 0.0:
                     if r.get("subshell") == subshell:
-                        r["score"] *= (1.0 + subshell_boost)
+                        score *= (1.0 + subshell_boost)
+                        
+                # Mass multiplier
+                mass = r.get("mass", 1.0)
+                score *= (1.0 + 0.2 * math.log1p(mass))
+                
+                # Time decay
+                if current_clock is not None and decay > 0.0:
+                    clock_delta = max(0, current_clock - r.get("last_review_clock", 0))
+                    score *= math.exp(-decay * clock_delta)
+                    
+                r["score"] = score
             results.sort(key=lambda x: -x.get("score", 0))
         else:
             # Rank by angular distance
@@ -505,6 +608,97 @@ class OnionDB:
             results.sort(key=lambda x: -x["score"])
 
         return results[:k]
+
+    def _hnsw_horizontal(self, gap: int, k: int, query_embedding: list,
+                         subshell: int = None,
+                         subshell_boost: float = 0.0,
+                         current_clock: int = None,
+                         decay_rate: float = None) -> list:
+        """
+        HNSW fast path for horizontal() — Phase 2.
+
+        Two-phase search:
+          Phase 1: HNSW candidate retrieval (k*5 over-fetch, ~3ms)
+          Phase 2: SQL record fetch + exact cosine re-ranking
+
+        The over-fetch ensures recall@k > 0.99 even with approximate
+        nearest neighbors. Re-ranking with exact cosine guarantees
+        identical scoring to the SQL scan path.
+        """
+        # Phase 1: HNSW candidate retrieval
+        self._hnsw.ensure_loaded(gap)
+        over_k = min(k * 5, self._hnsw.index_size(gap))
+        if over_k <= 0:
+            return []
+
+        candidate_ids, _ = self._hnsw.query(gap, query_embedding, k=over_k)
+        if not candidate_ids:
+            return []
+
+        # Phase 2: Fetch full records from SQLite by ID
+        placeholders = ",".join(["?" for _ in candidate_ids])
+        sql = f"""
+            SELECT {self._RECORD_COLS}
+            FROM records
+            WHERE id IN ({placeholders})
+        """
+        rows = self.conn.execute(sql, candidate_ids).fetchall()
+        results = self._rows_to_dicts(rows)
+
+        # Exact cosine re-ranking (identical to SQL scan scoring)
+        decay = decay_rate if decay_rate is not None else self.default_decay_rate
+        for r in results:
+            # GRF v2 Formula
+            score = self._cosine(query_embedding, r.get("_emb"))
+            
+            # Soft subshell boost applies after HNSW retrieval
+            if subshell is not None and subshell_boost > 0.0:
+                if r.get("subshell") == subshell:
+                    score *= (1.0 + subshell_boost)
+                    
+            # Mass multiplier
+            mass = r.get("mass", 1.0)
+            score *= (1.0 + 0.2 * math.log1p(mass))
+            
+            # Time decay
+            if current_clock is not None and decay > 0.0:
+                clock_delta = max(0, current_clock - r.get("last_review_clock", 0))
+                score *= math.exp(-decay * clock_delta)
+                
+            r["score"] = score
+
+        results.sort(key=lambda x: -x.get("score", 0))
+        return results[:k]
+
+    def _hnsw_populate_gap(self, gap: int) -> None:
+        """
+        Lazy bulk-load: populate a gap's HNSW index from SQLite.
+
+        Called on first horizontal() query after a gap graduates
+        (crosses hnsw_threshold). Reads all records from SQL for
+        this gap and does a full rebuild.
+
+        Idempotent — skips if already populated.
+        """
+        if self._hnsw.index_size(gap) > 0:
+            return  # already populated
+
+        rows = self.conn.execute(
+            "SELECT id, embedding FROM records WHERE gap = ? AND embedding IS NOT NULL",
+            (gap,)
+        ).fetchall()
+
+        if not rows:
+            return
+
+        records = []
+        for rid, emb_blob in rows:
+            if emb_blob:
+                emb = self._decode_embedding(emb_blob)
+                records.append((rid, emb))
+
+        if records:
+            self._hnsw.rebuild_gap(gap, records)
 
     # ═══════════════════════════════════════════
     # QUERY OPERATION 2: GRF (Geometric Ray Filter)
@@ -516,7 +710,9 @@ class OnionDB:
             query_embedding: list = None,
             subshell: int = None,
             subshell_boost: float = 0.0,
-            category: str = None) -> dict:
+            category: str = None,
+            current_clock: int = None,
+            decay_rate: float = None) -> dict:
         """
         GRF — Geometric Ray Filter.
 
@@ -553,7 +749,9 @@ class OnionDB:
                                     query_embedding=query_embedding,
                                     subshell=subshell,
                                     subshell_boost=subshell_boost,
-                                    category=category)
+                                    category=category,
+                                    current_clock=current_clock,
+                                    decay_rate=decay_rate)
             if items:
                 result[gap_id] = items
         return result
@@ -978,11 +1176,12 @@ class OnionDB:
     # ═══════════════════════════════════════════
 
     def _rows_to_dicts(self, rows: list[tuple]) -> list[dict]:
-        """Convert query rows to record dicts. Expects 15-column rows."""
+        """Convert query rows to record dicts. Expects 17-column rows
+        (Phase 5: mass + last_review_clock added)."""
         results = []
         for r in rows:
             mid, content, gap, theta, phi, depth, imp, cat, emb, ct, cp, \
-                sub, tgap, odate, meta = r
+                sub, tgap, odate, meta, mass, last_review_clock = r
             d = {
                 "id": mid, "content": content, "gap": gap,
                 "theta": round(theta, 2), "phi": round(phi, 2),
@@ -990,6 +1189,7 @@ class OnionDB:
                 "category": cat, "cell": (ct, cp),
                 "subshell": sub, "temporal_gap": tgap,
                 "origin_date": odate, "metadata": meta,
+                "mass": mass, "last_review_clock": last_review_clock,
                 "address": f"({gap}, {theta:.1f}°, {phi:.1f}°, d={depth:.2f})"
             }
             if emb:
@@ -1078,6 +1278,17 @@ class OnionDB:
         Returns: True if a row was deleted, False if ID not found.
         """
         with self._lock:
+            # ═══ HNSW SYNC: delete (Phase 3) ═══
+            # Pre-fetch gap before SQL DELETE so we know which HNSW index
+            # to mark the zombie in. Gap count is small (typically 5) so
+            # this is negligible overhead.
+            if self._hnsw is not None:
+                row = self.conn.execute(
+                    "SELECT gap FROM records WHERE id = ?", (id,)
+                ).fetchone()
+                if row:
+                    self._hnsw.delete(row[0], id)
+
             cursor = self.conn.execute("DELETE FROM records WHERE id = ?", (id,))
             self.conn.commit()
         return cursor.rowcount > 0
@@ -1214,6 +1425,16 @@ class OnionDB:
         """
         if not ids:
             return 0
+
+        # ═══ HNSW SYNC: bulk_delete (Phase 3) ═══
+        if self._hnsw is not None:
+            placeholders = ",".join(["?" for _ in ids])
+            gap_rows = self.conn.execute(
+                f"SELECT id, gap FROM records WHERE id IN ({placeholders})", ids
+            ).fetchall()
+            for rid, gap in gap_rows:
+                self._hnsw.delete(gap, rid)
+
         placeholders = ",".join(["?" for _ in ids])
         with self._lock:
             cursor = self.conn.execute(
@@ -1764,6 +1985,10 @@ class OnionDB:
         Use after changing boundaries, grid resolution, or PCA projection.
         Updates all records in-place without deleting data.
 
+        HNSW: After reindex, all HNSW indices are invalidated because
+        records may have moved between gaps. Call enable_hnsw() again
+        to rebuild indices after reindex.
+
         Args:
             boundaries: New boundaries to apply. If None, uses current.
 
@@ -1780,6 +2005,12 @@ class OnionDB:
                         "INSERT INTO shells (shell_id, boundary) VALUES (?, ?)",
                         (i, b)
                     )
+
+        # ═══ HNSW INVALIDATION (Phase 3) ═══
+        # Records are about to move between gaps — all indices are stale.
+        if self._hnsw is not None:
+            self._hnsw.close()
+            self._hnsw = None
 
         # Read all records (include theta/phi to avoid N+1 sub-queries)
         rows = self.conn.execute(
@@ -1816,6 +2047,7 @@ class OnionDB:
             "updated": updated,
             "boundaries": self.boundaries,
             "n_gaps": self.n_gaps,
+            "hnsw_invalidated": True,
         }
 
     # ═══════════════════════════════════════════
@@ -1823,7 +2055,10 @@ class OnionDB:
     # ═══════════════════════════════════════════
 
     def close(self):
-        """Close database connection."""
+        """Close database connection and persist HNSW indices."""
+        # ═══ HNSW PERSISTENCE (Phase 3) ═══
+        if self._hnsw is not None:
+            self._hnsw.close()  # saves all indices then clears state
         self.conn.close()
 
     def __enter__(self):

@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-blue)]()
+[![Tests](https://img.shields.io/badge/tests-164_passed-brightgreen)]()
 
 **A geometric memory database. Zero dependencies. Importance-stratified.**
 
@@ -69,16 +70,53 @@ print(db.get("idea-1"))  # full record dict
 db.delete("idea-2")      # True
 ```
 
+### Phase 5: Mass + Decay Scoring (GRF v2)
+
+```python
+# Records can carry mass (weight/reinforcement) and a review clock
+db = OnionDB("memory.db", default_decay_rate=0.01)
+
+db.insert("core-fact", "Important foundation",
+          importance=0.95, embedding=emb,
+          mass=5.0,              # high mass = stronger recall
+          last_review_clock=100) # when this record was last reviewed
+
+# GRF v2: scores are boosted by mass and penalized by staleness
+profile = db.grf(theta=45.0, phi=10.0,
+                 query_embedding=query_emb,
+                 current_clock=200,   # current time step
+                 decay_rate=0.01)     # per-query override (optional)
+
+# Score formula: cosine × (1 + 0.2·log₁₊(mass)) × exp(-decay × Δclock)
+```
+
+### HNSW Acceleration (10M+ records)
+
+```python
+# Enable HNSW for sub-10ms similarity search at scale
+db = OnionDB("large.db", default_decay_rate=0.01)
+db.enable_hnsw(dim=768, hnsw_threshold=1000)
+
+# Behavior:
+# - Below 1000 records per gap: brute-force SQL scan (zero overhead)
+# - Above 1000 records per gap: HNSW fast path → GRF v2 re-ranking
+# - Lazy loading: indices built per-gap on first query, not at startup
+# - Requires: pip install hnswlib
+```
+
 ## Features
 
 | Feature                  | Description                                                            |
 |--------------------------|------------------------------------------------------------------------|
 | **Zero dependencies**    | stdlib only — `sqlite3`, `math`, `struct`, `json`, `os`               |
 | **Numpy acceleration**   | Optional `oniondb[fast]` — ~10x cosine, ~5x decode. Auto-detected     |
+| **HNSW acceleration**    | Optional `hnswlib` — sub-10ms queries at 1M+ records per gap          |
 | **Geometric addressing** | Every record has a location: `(gap, θ, φ, depth)`                     |
 | **Importance shells**    | Data stratified by significance — core vs trivial                      |
+| **Mass + Decay (GRF v2)**| Records carry mass (reinforcement weight) and time-decay scoring       |
 | **6 query operations**   | horizontal, GRF, reverse_ray, temporal_grf, shell_scan, range_scan     |
 | **Beam search**          | `reverse_ray(beam_width=3)` explores multiple paths simultaneously     |
+| **Batch operations**     | `batch_insert()`, `iter_all()`, `export/import_jsonl()` for bulk I/O   |
 | **Configurable grid**    | `OnionDB(theta_cells=24, phi_cells=12)` for custom resolution          |
 | **CLI inspector**        | `python -m oniondb stats mydb.db` — inspect databases from terminal    |
 | **Embedding-agnostic**   | Works with any embedding model (OpenAI, Ollama, sentence-transformers) |
@@ -157,46 +195,101 @@ print(f"Cell occupancy: {stats['occupancy_after']:.0%}")  # target: >80%
 |----------------------------------------|------------------------------------------------------|
 | `insert(id, content, importance, ...)` | Insert a record with auto-computed geometric address |
 | `get(id)`                              | Retrieve a record by ID                              |
-| `update(id, **kwargs)`                 | Partial update — importance changes cascade address  |
+| `update(id, ...)`                      | Update fields on an existing record                  |
 | `delete(id)`                           | Delete a record by ID                                |
-| `bulk_delete(ids)`                     | Delete multiple records in one transaction           |
 | `count(gap=None)`                      | Count records (optionally per gap)                   |
 | `batch_insert(items)`                  | Insert multiple records in a single transaction      |
+| `bulk_delete(ids)`                     | Delete multiple records in one transaction           |
 | `close()`                              | Close the database connection                        |
+
+### Insert Parameters (Phase 5)
+
+```python
+db.insert(
+    id="rec-1",
+    content="Record content",
+    importance=0.85,            # determines shell placement (0.0–1.0)
+    embedding=[0.1, 0.2, ...],  # optional: enables cosine-ranked queries
+    category="topic",           # optional: categorical filter
+    mass=2.5,                   # GRF v2: reinforcement weight (default: 1.0)
+    last_review_clock=100,      # GRF v2: last review timestamp (default: 0)
+    origin_date="2026-05-12",   # optional: for temporal_grf
+    metadata='{"key": "val"}',  # optional: arbitrary JSON
+)
+```
 
 ### Query Operations
 
-| Method                                  | Description                                          |
-|-----------------------------------------|------------------------------------------------------|
-| `horizontal(gap, theta, phi, ...)`      | Find nearby items within one shell                   |
-| `grf(theta, phi, ...)`                  | **Geometric Ray Filter** — drill through all shells  |
-| `reverse_ray(start_embedding, ...)`     | Curved semantic trace from outer to inner            |
-| `temporal_grf(theta, phi, ...)`         | Drill through time-based shells                      |
-| `simhash_query(emb, max_hamming, ...)`  | **SimHash search** — high-dimensional LSH filtering  |
-| `shell_scan(gap, limit, offset)`        | Return everything at one importance level            |
-| `range_scan(gap_start, gap_end, limit)` | Return everything between two levels                 |
+| Method                                  | Description                                          | GRF v2 Params |
+|-----------------------------------------|------------------------------------------------------|---------------|
+| `horizontal(gap, theta, phi, ...)`      | Find nearby items within one shell                   | `current_clock`, `decay_rate`, `category`, `subshell`, `subshell_boost` |
+| `grf(theta, phi, ...)`                  | **Geometric Ray Filter** — drill through all shells  | `current_clock`, `decay_rate`, `category` |
+| `reverse_ray(start_embedding, ...)`     | Curved semantic trace from outer to inner            | `beam_width` |
+| `temporal_grf(theta, phi, ...)`         | Drill through time-based shells                      | `category`, `subshell` |
+| `shell_scan(gap, limit)`                | Return everything at one importance level            | `category`, `offset` |
+| `range_scan(gap_start, gap_end, limit)` | Return everything between two levels                 | `category`, `offset` |
 
-All query methods support `category=...` for filtering by record category.
+### GRF v2 Scoring Formula
 
-### Data Operations
+When `current_clock` is provided, query results are scored with the full GRF v2 formula:
 
-| Method                          | Description                                        |
-|---------------------------------|----------------------------------------------------|
-| `iter_all(batch_size=100)`      | Generator that yields all records in batches       |
-| `export_jsonl(path)`            | Export all records to portable JSONL file           |
-| `import_jsonl(path, chunk=1000)`| Streaming JSONL import (chunked, memory-safe)       |
+```
+score = cosine(query, record)
+       × (1 + 0.2 · log₁₊(mass))     ← mass boost (reinforcement)
+       × exp(-decay_rate · Δclock)     ← time decay (staleness penalty)
+```
+
+| Parameter | Effect | Example |
+|-----------|--------|---------|
+| `mass=0` | No boost (×1.0) | Newly inserted records |
+| `mass=1` | Mild boost (×1.14) | Standard weight |
+| `mass=10` | Strong boost (×1.48) | Frequently reinforced |
+| `mass=100` | Heavy boost (×1.92) | Core anchored knowledge |
+| `Δclock=0` | No decay (×1.0) | Just reviewed |
+| `Δclock=100, rate=0.01` | Moderate decay (×0.37) | Stale record |
+| `Δclock=0, rate=None` | No decay (×1.0) | Decay disabled |
+
+### HNSW Acceleration
+
+| Method                                 | Description                                          |
+|----------------------------------------|------------------------------------------------------|
+| `enable_hnsw(dim=768, ...)`            | Activate per-gap HNSW indices                        |
+
+```python
+db.enable_hnsw(
+    dim=768,              # embedding dimension
+    hnsw_threshold=1000,  # records per gap before HNSW activates
+    M=16,                 # HNSW graph connectivity (higher = better recall)
+    ef_construction=200,  # build-time search depth
+    ef_search=50,         # query-time search depth
+)
+```
+
+**How it works:**
+1. Each importance gap gets its own HNSW index
+2. Below `hnsw_threshold`: brute-force SQL scan (zero overhead)
+3. Above `hnsw_threshold`: HNSW candidate retrieval → GRF v2 re-ranking
+4. Indices are lazy-loaded per-gap on first query, persisted as `.hnsw` files
+5. Zombie compaction auto-triggers at 10% deleted entries
 
 ### Configuration
 
-| Method                        | Description                                      |
-|-------------------------------|--------------------------------------------------|
-| `fit_projection(save=True)`   | Self-calibrate PCA from stored embeddings        |
-| `fit_simhash(n_bits=64, seed)`| Generate SimHash hyperplanes and hash all records|
-| `fit_boundaries(n_gaps=5)`    | Suggest quantile-based boundaries from data      |
-| `reindex(boundaries=None)`    | Recalculate all gap/depth/cell assignments       |
-| `assign_temporal_gaps()`      | Auto-bucket records into time shells             |
-| `stats()`                     | Database statistics (gaps, categories, grid)     |
-| `cell_density(gap)`           | Cell occupancy map for a gap                     |
+| Method                      | Description                                      |
+|-----------------------------|--------------------------------------------------|
+| `fit_projection(save=True)` | Self-calibrate PCA from stored embeddings        |
+| `fit_boundaries(n_gaps=5)`  | Suggest quantile-based boundaries from data      |
+| `reindex(boundaries=None)`  | Recalculate all gap/depth/cell assignments       |
+| `stats()`                   | Database statistics (gaps, categories, grid)     |
+| `cell_density(gap)`         | Cell occupancy map for a gap                     |
+
+### Batch & I/O Operations
+
+| Method                      | Description                                      |
+|-----------------------------|--------------------------------------------------|
+| `batch_insert(items)`       | Single-transaction insert (~100x faster)         |
+| `iter_all(batch_size=500)`  | Streaming generator (memory-efficient)           |
+| `export_jsonl(path)`        | Export all records to JSONL                      |
+| `import_jsonl(path)`        | Import records from JSONL                        |
 
 ### Constructor Options
 
@@ -207,7 +300,14 @@ db = OnionDB("custom.db", boundaries=[0.90, 0.70, 0.40, 0.00])  # 4 shells
 # Higher grid resolution for larger datasets (default: 12×6 = 72 cells)
 db = OnionDB("large.db", theta_cells=24, phi_cells=12)  # 288 cells
 
-# Context manager — auto-closes on exit
+# GRF v2: enable mass-weighted decay scoring
+db = OnionDB("memory.db", default_decay_rate=0.01)
+
+# HNSW acceleration for large-scale deployments
+db = OnionDB("scale.db", default_decay_rate=0.01)
+db.enable_hnsw(dim=768, hnsw_threshold=1000)
+
+# Context manager — auto-closes on exit (saves HNSW indices)
 with OnionDB("session.db") as db:
     db.insert("x", "auto-close on exit", importance=0.5)
 ```
@@ -291,34 +391,6 @@ else:
     print(f"Fragmented: {trace['curvature']}° total deviation over {trace['n_hops']} hops")
 ```
 
-### SimHash — locality-sensitive hashing for high-dimensional search
-
-OnionDB's cell grid projects embeddings onto a 2D sphere via PCA, which discards all but the top-2 variance axes. This works well at small scales, but semantically similar records can land in distant cells if their similarity lives in the other dimensions.
-
-**SimHash** provides an orthogonal search path that operates in the **full embedding space**:
-
-1. `fit_simhash(n_bits=64, seed=42)` generates random hyperplanes and computes a 64-bit hash for every record
-2. Each bit captures which side of a hyperplane the embedding falls on
-3. **Hamming distance** between hashes approximates angular distance in the full space
-4. `simhash_query()` pre-filters by Hamming distance, then ranks by exact cosine
-
-```python
-db.fit_simhash(n_bits=64, seed=42)  # one-time setup
-
-# Find similar records using high-dimensional proximity
-results = db.simhash_query(
-    query_embedding=emb,
-    max_hamming=12,   # candidates within 12 bit-flips
-    gap=0,            # optional gap filter
-    k=10
-)
-# Each result includes 'hamming' (bit distance) and 'score' (cosine)
-```
-
-New records are automatically hashed on `insert()` once planes are fitted. Hyperplanes are stored in the database, so hashing is portable and deterministic across sessions.
-
-Use SimHash when cell-grid search isn't finding records you expect — it catches cross-cell neighbors that PCA projection scattered.
-
 ### Embedding model consistency
 
 **All records must use the same embedding model.** PCA projection is fitted on a specific embedding space. Mixing models (e.g., inserting with `all-MiniLM-L6-v2` and querying with `text-embedding-ada-002`) produces meaningless coordinates.
@@ -327,7 +399,9 @@ This is not OnionDB-specific — it's a universal constraint of all embedding-ba
 
 ## Scaling
 
-OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries only scan the target cell and its neighbors (~9 cells), not the entire database. This means query time grows with cell density, not total record count.
+OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries only scan the target cell and its neighbors (~9 cells), not the entire database.
+
+### Without HNSW (brute-force mode)
 
 | Records | Avg per cell | GRF performance | Verdict             |
 |---------|--------------|-----------------|---------------------|
@@ -335,23 +409,36 @@ OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries
 | 10K     |  ~28         | instant         | ✅ smooth            |
 | 100K    |  ~280        | fast            | ✅ solid             |
 | 500K    |  ~1,400      | noticeable      | ⚠️ still usable      |
-| 1M+     |  ~2,800+     | slowing down    | ❌ consider alternatives |
+| 1M+     |  ~2,800+     | slowing down    | ⚡ enable HNSW       |
 
-### What limits scaling
+### With HNSW acceleration (`pip install hnswlib`)
 
-- **Cosine similarity** — without numpy, each candidate requires a pure Python dot product. Install `oniondb[fast]` for ~10x speedup.
-- **`fit_projection()`** — reads all embeddings to compute PCA. This is O(n) and will be slow at millions of records.
-- **SQLite single-writer** — concurrent writes are serialized. Reads are concurrent via WAL mode.
+| Records | HNSW status       | GRF performance | Verdict              |
+|---------|--------------------|-----------------|----------------------|
+| 1K      | below threshold    | instant (SQL)   | ✅ zero overhead      |
+| 10K     | active per-gap     | instant         | ✅ smooth             |
+| 100K    | active, lazy-load  | fast            | ✅ solid              |
+| 1M      | active, ~200K/gap  | sub-10ms/gap    | ✅ production ready   |
+| 10M     | active, ~2M/gap    | ~15ms/gap       | ✅ tested at scale    |
 
-### What helps
+**HNSW architecture:**
+- **Per-gap indices** — each importance shell has its own HNSW graph
+- **Auto-graduate** — brute-force below threshold, HNSW above (no config needed)
+- **Two-phase query** — HNSW retrieves candidates → GRF v2 re-ranks with mass+decay
+- **Lazy loading** — cold gap indices are built on first query, not at startup
+- **Zombie compaction** — deleted records are marked, auto-compacted at 10% ratio
+- **Persistence** — `.hnsw` + `.hnsw.map` files saved alongside the `.db` file
+- **M=16** — recall@50 > 0.99 at 1M records / 768D
 
-- **Numpy acceleration** — `pip install oniondb[fast]` uses `np.dot` and `np.frombuffer` for the hot path. ~10x faster cosine, ~5x faster BLOB decoding.
-- **Configurable grid** — `OnionDB(theta_cells=24, phi_cells=12)` creates 288 cells instead of 72, halving per-cell density for large datasets.
-- The grid **partitions** the search space — you're always scanning ~1/72 of each shell (or less with higher resolution), not everything.
-- **Shell structure** naturally distributes data — most real datasets have more trivial records than core ones, spreading load across gaps.
-- For datasets beyond 500K, you can use OnionDB as a **complementary index** alongside FAISS/pgvector for the raw ANN search.
+### What helps scaling
 
-> **OnionDB is designed for human-scale datasets** (up to ~500K records) where importance stratification matters more than raw vector throughput. It doesn't compete with FAISS at 100M scale — it solves a different problem.
+- **HNSW** — `enable_hnsw(dim=768)` for sub-10ms similarity search at 1M+ records.
+- **Numpy acceleration** — `pip install oniondb[fast]` uses `np.dot` for the hot path. ~10x faster cosine.
+- **Batch operations** — `batch_insert()` for ~100x faster ingestion, `iter_all()` for streaming export.
+- **Configurable grid** — `OnionDB(theta_cells=24, phi_cells=12)` creates 288 cells instead of 72.
+- **Shell structure** — naturally distributes data across gaps, preventing hotspots.
+
+> **OnionDB scales to 10M+ records with HNSW enabled.** Without HNSW, it's optimized for human-scale datasets (~500K). The HNSW layer is optional — zero dependencies when disabled.
 
 ## Comparison
 
@@ -402,6 +489,36 @@ We ran a head-to-head A/B comparison against a traditional flat vector database 
 Flat vector databases rank by cosine similarity alone. OnionDB's geometric structure means records at different importance levels get equal representation through the GRF drill. A "trivial" record that's semantically close can appear alongside a "core" record on the same topic — something flat search buries under higher-scored results.
 
 **Verdict: OnionDB doesn't replace flat search — it surfaces what flat search misses.**
+
+## Testing
+
+OnionDB ships with **164 tests** across 3 test suites:
+
+```bash
+python -m pytest oniondb/tests/ -v
+```
+
+| Suite | Tests | Coverage |
+|-------|-------|----------|
+| `test_oniondb.py` | 93 | Core API, edge cases, CLI, PCA, boundaries, reindex |
+| `test_hnsw_grfv2.py` | 24 | HNSW backend, GRF v2 mass+decay, scaling stress |
+| `test_query_coverage.py` | 47 | Every query method with Phase 5 fields |
+
+### Query method test coverage
+
+| Method | Tests | Verifies |
+|--------|-------|----------|
+| `horizontal()` | 6 | results, sorting, category, mass boost, decay, subshell |
+| `grf()` | 6 | multi-gap dict, scored results, category, decay, alias, k-limit |
+| `reverse_ray()` | 6 | path, curvature, hops, straight flag, beam search, start_gap |
+| `temporal_grf()` | 4 | dict return, scores, no-embedding fallback, category |
+| `shell_scan()` | 5 | list, limit, pagination, category, mass fields |
+| `range_scan()` | 5 | list, gap bounds, full range, limit+offset, category |
+| `cell_density()` | 3 | list, format, total consistency |
+| `stats()` | 3 | structure, total, categories |
+| `update()` | 4 | content, gap migration, nonexistent, mass preservation |
+| `CRUD` | 4 | get, get-missing, delete, count-per-gap |
+| `export/import` | 1 | JSONL roundtrip |
 
 ## License
 

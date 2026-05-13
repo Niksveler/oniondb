@@ -5,5 +5,5 @@ Zero dependencies. Importance-stratified. Embedding-agnostic.
 """
 from .onion_db import OnionDB
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __all__ = ["OnionDB"]

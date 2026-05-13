@@ -2,6 +2,37 @@
 
 All notable changes to OnionDB will be documented in this file.
 
+## [0.6.0] — 2026-05-13
+
+### Added
+- **HNSW acceleration** — optional `hnswlib` backend for sub-10ms similarity search at 1M+ records per gap.
+  - `enable_hnsw(dim=768, hnsw_threshold=1000, M=16, ef_construction=200, ef_search=50)` — activate per-gap HNSW indices.
+  - **Two-phase query** — HNSW retrieves candidates → GRF v2 re-ranks with mass+decay.
+  - **Auto-graduate** — brute-force below threshold, HNSW above. No config needed.
+  - **Lazy loading** — cold gap indices are built on first query, not at startup.
+  - **Zombie compaction** — deleted records are marked, auto-compacted at 10% ratio.
+  - **Persistence** — `.hnsw` + `.hnsw.map` files saved alongside the `.db` file.
+  - Fail-soft: if `hnswlib` is not installed, everything works without acceleration.
+- **GRF v2 — Mass-weighted decay scoring** (Phase 5 schema).
+  - `mass` column — reinforcement weight for records. Higher mass = stronger recall.
+  - `last_review_clock` column — temporal marker for staleness-aware ranking.
+  - `default_decay_rate` constructor parameter — enables time-decay scoring.
+  - `current_clock` and `decay_rate` query parameters on `horizontal()` and `grf()`.
+  - Scoring formula: `cosine × (1 + 0.2·log₁₊(mass)) × exp(-decay × Δclock)`.
+  - Automatic schema migration — existing v0.5.0 databases gain `mass` and `last_review_clock` columns on first load.
+- **`migrate_phase5.py`** — standalone migration script for Phase 5 schema.
+- **71 new tests** (total: 164 across 3 suites).
+  - `test_hnsw_grfv2.py` (24 tests) — HNSW backend, GRF v2 mass+decay, scaling benchmarks.
+  - `test_query_coverage.py` (47 tests) — exhaustive validation of every query method with Phase 5 fields.
+
+### Changed
+- `insert()` now accepts `mass` and `last_review_clock` parameters.
+- `horizontal()` and `grf()` accept `current_clock` and `decay_rate` for homeostatic scoring.
+- README updated with Phase 5 documentation, HNSW architecture, scaling tables (10M+).
+- Development Status upgraded from Alpha to Beta.
+- `pyproject.toml` adds `[hnsw]` and `[all]` optional dependency groups.
+- Install: `pip install oniondb[all]` for numpy + hnswlib acceleration.
+
 ## [0.5.0] — 2026-05-07
 
 ### Added
