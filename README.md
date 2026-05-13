@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-blue)]()
-[![Tests](https://img.shields.io/badge/tests-216_passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-164_passed-brightgreen)]()
 
 **A geometric memory database. Zero dependencies. Importance-stratified.**
 
@@ -35,6 +35,18 @@ With optional numpy acceleration (~10x cosine speed):
 
 ```bash
 pip install oniondb[fast]
+```
+
+With HNSW acceleration (sub-10ms at 1M+ records):
+
+```bash
+pip install oniondb[hnsw]
+```
+
+Everything (numpy + hnswlib):
+
+```bash
+pip install oniondb[all]
 ```
 
 ## Quick Start
@@ -92,6 +104,11 @@ profile = db.grf(theta=45.0, phi=10.0,
 
 ### HNSW Acceleration (10M+ records)
 
+> **Requires:** `pip install hnswlib` — or install with:
+> ```bash
+> pip install oniondb[hnsw]
+> ```
+
 ```python
 # Enable HNSW for sub-10ms similarity search at scale
 db = OnionDB("large.db", default_decay_rate=0.01)
@@ -101,7 +118,6 @@ db.enable_hnsw(dim=768, hnsw_threshold=1000)
 # - Below 1000 records per gap: brute-force SQL scan (zero overhead)
 # - Above 1000 records per gap: HNSW fast path → GRF v2 re-ranking
 # - Lazy loading: indices built per-gap on first query, not at startup
-# - Requires: pip install hnswlib
 ```
 
 ## Features
@@ -411,7 +427,11 @@ OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries
 | 500K    |  ~1,400      | noticeable      | ⚠️ still usable      |
 | 1M+     |  ~2,800+     | slowing down    | ⚡ enable HNSW       |
 
-### With HNSW acceleration (`pip install hnswlib`)
+### With HNSW acceleration
+
+```bash
+pip install oniondb[hnsw]
+```
 
 | Records | HNSW status       | GRF performance | Verdict              |
 |---------|--------------------|-----------------|----------------------|
@@ -433,7 +453,10 @@ OnionDB uses a **72-cell grid per shell** (12 theta × 6 phi divisions). Queries
 ### What helps scaling
 
 - **HNSW** — `enable_hnsw(dim=768)` for sub-10ms similarity search at 1M+ records.
-- **Numpy acceleration** — `pip install oniondb[fast]` uses `np.dot` for the hot path. ~10x faster cosine.
+- **Numpy acceleration** — uses `np.dot` for the hot path. ~10x faster cosine.
+  ```bash
+  pip install oniondb[fast]
+  ```
 - **Batch operations** — `batch_insert()` for ~100x faster ingestion, `iter_all()` for streaming export.
 - **Configurable grid** — `OnionDB(theta_cells=24, phi_cells=12)` creates 288 cells instead of 72.
 - **Shell structure** — naturally distributes data across gaps, preventing hotspots.
