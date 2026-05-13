@@ -4,14 +4,14 @@
 [![PyPI](https://img.shields.io/pypi/v/oniondb)](https://pypi.org/project/oniondb/)
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Dependencies](https://img.shields.io/badge/dependencies-0-blue)]()
-[![Tests](https://img.shields.io/badge/tests-164_passed-brightgreen)]()
+[![Dependencies](https://img.shields.io/badge/core_deps-0-blue)](https://pypi.org/project/oniondb/)
+[![Tests](https://img.shields.io/badge/tests-216_passed-brightgreen)]()
 
-**A geometric memory database. Zero dependencies. Importance-stratified.**
+**A geometric memory database. Importance-stratified shells. HNSW-accelerated. Mass-weighted decay scoring.**
 
-Your data has a *location*, not just a vector.
+Your data has a *location*, not just a vector. Records live at `(gap, θ, φ, depth)` — enabling queries flat vector DBs can't do.
 
-*Originally developed for the AIGalaxy cognitive memory field; extracted for standalone use.*
+*Built for the [AIGalaxy](https://github.com/Niksveler/aigalaxy) cognitive memory field. Extracted for standalone use.*
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Niksveler/oniondb/main/docs/oniondb_diagram.png" alt="OnionDB Architecture" width="600">
