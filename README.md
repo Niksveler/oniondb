@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Dependencies](https://img.shields.io/badge/dependencies-0-blue)]()
-[![Tests](https://img.shields.io/badge/tests-164_passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-216_passed-brightgreen)]()
 
 **A geometric memory database. Zero dependencies. Importance-stratified.**
 

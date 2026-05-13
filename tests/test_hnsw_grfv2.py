@@ -20,8 +20,11 @@ import os
 import sys
 import time
 import pytest
-import numpy as np
 from pathlib import Path
+
+# Skip entire module if numpy or hnswlib not installed
+np = pytest.importorskip("numpy")
+hnswlib = pytest.importorskip("hnswlib")
 
 # Ensure oniondb is importable
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

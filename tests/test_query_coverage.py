@@ -16,8 +16,10 @@
 import sys
 import math
 import pytest
-import numpy as np
 from pathlib import Path
+
+# Skip entire module if numpy not installed
+np = pytest.importorskip("numpy")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from oniondb import OnionDB

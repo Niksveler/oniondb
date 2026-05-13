@@ -63,6 +63,30 @@ jobs:
       - name: Verify numpy coexistence
         run: python -c "import numpy; from oniondb import OnionDB; print('OnionDB + numpy coexist OK')"
 
+  test-hnsw:
+    runs-on: ubuntu-latest
+    name: "Python 3.12 + numpy + hnswlib"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install all dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          pip install -e ".[all]"
+
+      - name: Run full test suite (HNSW + GRF v2)
+        run: pytest tests/ -v --tb=short
+
+      - name: Verify HNSW coexistence
+        run: python -c "import hnswlib; from oniondb import OnionDB; print('OnionDB + hnswlib coexist OK')"
+
   coverage:
     runs-on: ubuntu-latest
     name: "Coverage"
@@ -80,7 +104,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install pytest pytest-cov
-          pip install -e .
+          pip install -e ".[all]"
 
       - name: Run tests with coverage
         run: pytest tests/ --cov=oniondb --cov-report=term-missing --cov-fail-under=80
