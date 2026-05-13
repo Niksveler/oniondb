@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/pypi/pyversions/oniondb)](https://pypi.org/project/oniondb/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Dependencies](https://img.shields.io/badge/core_deps-0-blue)](https://pypi.org/project/oniondb/)
-[![Tests](https://img.shields.io/badge/tests-216_passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-164_passed-brightgreen)]()
 
 **A geometric memory database. Importance-stratified shells. HNSW-accelerated. Mass-weighted decay scoring.**
 
@@ -111,7 +111,7 @@ db.enable_hnsw(dim=768, hnsw_threshold=1000)
 
 | Feature                  | Description                                                            |
 |--------------------------|------------------------------------------------------------------------|
-| **Zero dependencies**    | stdlib only — `sqlite3`, `math`, `struct`, `json`, `os`               |
+| **Zero core dependencies** | stdlib only — `sqlite3`, `math`, `struct`, `json`, `os`. Optional: numpy, hnswlib |
 | **Numpy acceleration**   | Optional `oniondb[fast]` — ~10x cosine, ~5x decode. Auto-detected     |
 | **HNSW acceleration**    | Optional `hnswlib` — sub-10ms queries at 1M+ records per gap          |
 | **Geometric addressing** | Every record has a location: `(gap, θ, φ, depth)`                     |
@@ -454,7 +454,7 @@ pip install oniondb[hnsw]
 
 |                      | OnionDB       | FAISS        | ChromaDB      | Pinecone      | pgvector   |
 |----------------------|---------------|--------------|---------------|---------------|------------|
-| Dependencies         |    **0**      |   numpy      |    many       |  cloud SDK    | PostgreSQL |
+| Dependencies         | **0 core**    |   numpy      |    many       |  cloud SDK    | PostgreSQL |
 | Importance hierarchy |  **native**   |    ❌        |     ❌        | metadata only |     ❌     |
 | Geometric queries    | **GRF, ray**  |    ❌        |     ❌        |      ❌       |     ❌     |
 | Storage              |  SQLite file  | memory/file  |   SQLite      |    cloud      |   server   |
