@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oniondb"
-version = "0.6.0"
-description = "A geometric database with importance-stratified shells and zero dependencies."
+version = "0.6.1"
+description = "A geometric memory database with importance-stratified shells, HNSW acceleration, and mass-weighted decay scoring."
 readme = "README.md"
 authors = [{name = "Nick Sveler"}]
 license = "MIT"
@@ -14,7 +14,7 @@ requires-python = ">=3.9"
 keywords = [
     "database", "geometric", "vector", "embeddings",
     "importance", "hierarchical", "sqlite", "shell", "retrieval",
-    "hnsw", "mass", "decay", "curriculum"
+    "hnsw", "memory", "mass", "decay", "similarity-search"
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -33,8 +33,8 @@ classifiers = [
 
 [project.optional-dependencies]
 fast = ["numpy>=1.21"]
-hnsw = ["hnswlib>=0.8"]
-all = ["numpy>=1.21", "hnswlib>=0.8"]
+hnsw = ["numpy>=1.21", "hnswlib>=0.7"]
+all = ["numpy>=1.21", "hnswlib>=0.7"]
 dev = ["pytest", "pytest-cov"]
 
 [project.urls]

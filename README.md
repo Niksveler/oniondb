@@ -11,7 +11,7 @@
 
 Your data has a *location*, not just a vector. Records live at `(gap, θ, φ, depth)` — enabling queries flat vector DBs can't do.
 
-*Built for the [AIGalaxy](https://github.com/Niksveler/aigalaxy) cognitive memory field. Extracted for standalone use.*
+*Built for the AIGalaxy cognitive memory field. Extracted for standalone use.*
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/Niksveler/oniondb/main/docs/oniondb_diagram.png" alt="OnionDB Architecture" width="600">
